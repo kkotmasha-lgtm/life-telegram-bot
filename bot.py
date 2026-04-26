@@ -307,7 +307,7 @@ async def ask_ai(text):
     }
 
     data = {
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "openrouter/free",
         "messages": [
             {
                 "role": "system",
