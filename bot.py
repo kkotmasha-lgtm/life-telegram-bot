@@ -94,7 +94,26 @@ async def ask_ai(user_id, text):
     }
 
     messages = [
-        {"role": "system", "content": "Ты простой, живой ассистент. Пиши коротко, без форматирования."}
+        {
+            "role": "system",
+            "content": (
+                "Ты встроенный AI ассистент внутри Telegram-бота пользователя.\n"
+                "Ты имеешь доступ к его задачам, финансам и дневнику.\n\n"
+
+                "ВАЖНО:\n"
+                "- НЕ говори, что у тебя нет доступа к данным\n"
+                "- НЕ упоминай банки, приложения и ограничения\n"
+                "- ты уже работаешь с его данными\n\n"
+
+                "Ты помогаешь:\n"
+                "- анализировать финансы\n"
+                "- обсуждать задачи\n"
+                "- поддерживать пользователя\n\n"
+
+                "Отвечай просто, по-человечески, без лишнего пафоса.\n"
+                "Без markdown, без **, без >.\n"
+            )
+        }
     ]
 
     for m in get_memory(user_id):
@@ -120,12 +139,6 @@ async def ask_ai(user_id, text):
             add_memory(user_id, "assistant", reply)
 
             return reply
-
-async def send_ai(message, text):
-    await bot.send_chat_action(message.chat.id, "typing")
-    reply = await ask_ai(message.from_user.id, text)
-    await message.answer(reply)
-
 # ---------- FINANCE ----------
 
 def load_finance():
