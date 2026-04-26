@@ -119,82 +119,38 @@ def extract_time(text):
     return f"{int(hours):02d}:{minutes}"
 
 
-def parse_smart_finance(text):
-    original_text = text
-    text = text.lower()
-
-    finance_words = [
-        "расход", "потрат", "купила", "купил", "купить",
-        "доход", "получила", "получил", "зарплата", "зп",
-        "запиши расход", "запиши доход"
-    ]
-
-    if not any(word in text for word in finance_words):
-        return None
-
-    amount_match = re.search(r"([+-]?\d+)", text)
-    if not amount_match:
-        return None
-
-    amount = int(amount_match.group(1))
-
-    income_words = ["доход", "получила", "получил", "зарплата", "зп"]
-    expense_words = ["расход", "потрат", "купила", "купил", "купить"]
-
-    if any(word in text for word in income_words):
-        amount = abs(amount)
-    elif any(word in text for word in expense_words):
-        amount = -abs(amount)
-    elif amount == 0:
-        return None
-
-    clean = original_text.lower()
-    clean = re.sub(r"запиши", "", clean)
-    clean = re.sub(r"доход|расход|получила|получил|потратила|потратил|купила|купил|купить", "", clean)
-    clean = re.sub(r"[+-]?\d+", "", clean)
-    clean = re.sub(r"\bр\b|\bруб\b|\bрублей\b|\bсегодня\b", "", clean)
-    clean = clean.strip()
-
-    category_words = clean.split()
-    category = category_words[-1] if category_words else "без категории"
-
-    return amount, category
-
-
-def add_finance_operation(user_id, amount, category):
-    finance = load_finance()
-
-    finance.append({
-        "user_id": user_id,
-        "amount": amount,
-        "category": category,
-        "date": get_today(),
-        "time": get_current_time(),
-    })
-
-    save_finance(finance)
-
-
 def parse_smart_task(text):
     lower_text = text.lower()
 
-    if not any(word in lower_text for word in ["добавь задачу", "задача", "напомни"]):
+    if not any(word in lower_text for word in [
+        "добавь задачу",
+        "запиши задачу",
+        "создай задачу",
+        "поставь задачу",
+        "напомни",
+    ]):
         return None
+
+    task_time = extract_time(text)
 
     task_text = text
     task_text = re.sub(r"добавь задачу", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"задача", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"запиши задачу", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"создай задачу", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"поставь задачу", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"напомни мне", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"напомни", "", task_text, flags=re.IGNORECASE)
+
+    if task_time:
+        task_text = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", task_text, flags=re.IGNORECASE)
+        task_text = re.sub(r"\d{1,2}:\d{2}", "", task_text)
+
     task_text = task_text.strip()
 
     if not task_text:
         return None
 
-    task_time = extract_time(task_text)
-
     return task_text, task_time
-
-
 def add_task(user_id, title, task_time=None):
     tasks = load_tasks()
 
