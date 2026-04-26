@@ -315,7 +315,15 @@ def detect_delete_last_task(text):
     return (
         "задач" in text
         and "последн" in text
-        and any(word in text for word in ["удали", "убери", "убрать", "удалить"])
+        and any(word in text for word in [
+            "удали",
+            "удалить",
+            "убери",
+            "убрать",
+            "отмени",
+            "отменить",
+            "отмена",
+        ])
     )
 
 
