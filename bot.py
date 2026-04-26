@@ -35,57 +35,350 @@ main_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton(text="📋 Мои задачи")],
         [KeyboardButton(text="💰 Финансы")],
         [KeyboardButton(text="📊 Баланс")],
+        [KeyboardButton(text="📈 Аналитика финансов")],
     ],
     resize_keyboard=True,
 )
 
-# ---------- UTILS ----------
 
 def get_now():
     return datetime.now(TIMEZONE)
 
+
 def get_today():
     return get_now().strftime("%Y-%m-%d")
+
 
 def get_current_time():
     return get_now().strftime("%H:%M")
 
+
 def load_json(filename, default):
     if not os.path.exists(filename):
         return default
-    with open(filename, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+    with open(filename, "r", encoding="utf-8") as file:
+        return json.load(file)
+
 
 def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with open(filename, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
 
-# ---------- MEMORY ----------
+
+def load_tasks():
+    return load_json(TASKS_FILE, [])
+
+
+def save_tasks(tasks):
+    save_json(TASKS_FILE, tasks)
+
+
+def load_finance():
+    return load_json(FINANCE_FILE, [])
+
+
+def save_finance(finance):
+    save_json(FINANCE_FILE, finance)
+
 
 def load_memory():
     return load_json(MEMORY_FILE, {})
 
-def save_memory(data):
-    save_json(MEMORY_FILE, data)
+
+def save_memory(memory):
+    save_json(MEMORY_FILE, memory)
+
 
 def add_memory(user_id, role, text):
     memory = load_memory()
-    uid = str(user_id)
+    user_key = str(user_id)
 
-    if uid not in memory:
-        memory[uid] = []
+    if user_key not in memory:
+        memory[user_key] = []
 
-    memory[uid].append({"role": role, "content": text})
-    memory[uid] = memory[uid][-20:]
+    memory[user_key].append({
+        "role": role,
+        "content": text,
+    })
 
+    memory[user_key] = memory[user_key][-20:]
     save_memory(memory)
+
 
 def get_memory(user_id):
     return load_memory().get(str(user_id), [])
 
-# ---------- AI ----------
+
+def extract_time(text):
+    match = re.search(r"(\d{1,2}:\d{2})", text)
+    if not match:
+        return None
+
+    hours, minutes = match.group(1).split(":")
+    return f"{int(hours):02d}:{minutes}"
+
+
+def parse_smart_finance(text):
+    original_text = text
+    text = text.lower()
+
+    finance_words = [
+        "расход", "потрат", "купила", "купил", "купить",
+        "доход", "получила", "получил", "зарплата", "зп",
+        "запиши расход", "запиши доход"
+    ]
+
+    if not any(word in text for word in finance_words):
+        return None
+
+    amount_match = re.search(r"([+-]?\d+)", text)
+    if not amount_match:
+        return None
+
+    amount = int(amount_match.group(1))
+
+    income_words = ["доход", "получила", "получил", "зарплата", "зп"]
+    expense_words = ["расход", "потрат", "купила", "купил", "купить"]
+
+    if any(word in text for word in income_words):
+        amount = abs(amount)
+    elif any(word in text for word in expense_words):
+        amount = -abs(amount)
+    elif amount == 0:
+        return None
+
+    clean = original_text.lower()
+    clean = re.sub(r"запиши", "", clean)
+    clean = re.sub(r"доход|расход|получила|получил|потратила|потратил|купила|купил|купить", "", clean)
+    clean = re.sub(r"[+-]?\d+", "", clean)
+    clean = re.sub(r"\bр\b|\bруб\b|\bрублей\b|\bсегодня\b", "", clean)
+    clean = clean.strip()
+
+    category_words = clean.split()
+    category = category_words[-1] if category_words else "без категории"
+
+    return amount, category
+
+
+def add_finance_operation(user_id, amount, category):
+    finance = load_finance()
+
+    finance.append({
+        "user_id": user_id,
+        "amount": amount,
+        "category": category,
+        "date": get_today(),
+        "time": get_current_time(),
+    })
+
+    save_finance(finance)
+
+
+def parse_smart_task(text):
+    lower_text = text.lower()
+
+    if not any(word in lower_text for word in ["добавь задачу", "задача", "напомни"]):
+        return None
+
+    task_text = text
+    task_text = re.sub(r"добавь задачу", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"задача", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"напомни", "", task_text, flags=re.IGNORECASE)
+    task_text = task_text.strip()
+
+    if not task_text:
+        return None
+
+    task_time = extract_time(task_text)
+
+    return task_text, task_time
+
+
+def add_task(user_id, title, task_time=None):
+    tasks = load_tasks()
+
+    task = {
+        "user_id": user_id,
+        "title": title,
+        "date": get_today(),
+        "status": "active",
+        "reminded": False,
+    }
+
+    if task_time:
+        task["time"] = task_time
+
+    tasks.append(task)
+    save_tasks(tasks)
+
+
+def get_today_tasks(user_id):
+    tasks = load_tasks()
+
+    return [
+        task for task in tasks
+        if task.get("user_id") == user_id
+        and task.get("date") == get_today()
+        and task.get("status", "active") == "active"
+    ]
+
+
+def calculate_balance(user_id):
+    finance = load_finance()
+    user_finance = [item for item in finance if item.get("user_id") == user_id]
+
+    balance = sum(item.get("amount", 0) for item in user_finance)
+
+    today = get_today()
+
+    today_income = sum(
+        item.get("amount", 0)
+        for item in user_finance
+        if item.get("amount", 0) > 0 and item.get("date") == today
+    )
+
+    today_expense = sum(
+        item.get("amount", 0)
+        for item in user_finance
+        if item.get("amount", 0) < 0 and item.get("date") == today
+    )
+
+    return balance, today_income, today_expense
+
+
+def get_period_start(period):
+    today = get_now().date()
+
+    if period == "today":
+        return today
+
+    if period == "week":
+        return today - timedelta(days=today.weekday())
+
+    if period == "month":
+        return today.replace(day=1)
+
+    return today
+
+
+def detect_finance_question(text):
+    text = text.lower()
+
+    question_words = [
+        "какие расходы", "какие доходы", "покажи расходы",
+        "покажи доходы", "финансы за", "расходы за",
+        "доходы за", "сколько потратила", "сколько получила",
+        "операции сегодня", "операции за"
+    ]
+
+    if not any(word in text for word in question_words):
+        return None
+
+    if "месяц" in text:
+        period = "month"
+    elif "недел" in text:
+        period = "week"
+    else:
+        period = "today"
+
+    return period
+
+
+def get_finance_stats(user_id, period):
+    finance = load_finance()
+    start_date = get_period_start(period)
+
+    operations = []
+    income = 0
+    expense = 0
+    income_by_category = defaultdict(int)
+    expense_by_category = defaultdict(int)
+
+    for item in finance:
+        if item.get("user_id") != user_id:
+            continue
+
+        item_date = datetime.strptime(item.get("date"), "%Y-%m-%d").date()
+
+        if item_date < start_date:
+            continue
+
+        amount = item.get("amount", 0)
+        category = item.get("category", "без категории")
+
+        operations.append(item)
+
+        if amount > 0:
+            income += amount
+            income_by_category[category] += amount
+        else:
+            expense += amount
+            expense_by_category[category] += amount
+
+    return {
+        "income": income,
+        "expense": expense,
+        "result": income + expense,
+        "operations": operations,
+        "income_by_category": dict(income_by_category),
+        "expense_by_category": dict(expense_by_category),
+    }
+
+
+def format_finance_stats(user_id, period):
+    stats = get_finance_stats(user_id, period)
+
+    period_names = {
+        "today": "сегодня",
+        "week": "за неделю",
+        "month": "за месяц",
+    }
+
+    text = f"📊 Финансы {period_names.get(period, '')}\n\n"
+    text += f"💚 Доходы: +{stats['income']}\n"
+    text += f"💸 Расходы: {stats['expense']}\n"
+    text += f"💰 Итог: {stats['result']}\n\n"
+
+    if not stats["operations"]:
+        text += "Операций пока нет."
+        return text
+
+    text += "Операции:\n"
+
+    for item in stats["operations"]:
+        amount = item.get("amount", 0)
+        category = item.get("category", "без категории")
+        time = item.get("time", "")
+
+        sign = "+" if amount > 0 else ""
+        text += f"• {time} {sign}{amount} — {category}\n"
+
+    if stats["expense_by_category"]:
+        text += "\nРасходы по категориям:\n"
+        for category, amount in sorted(
+            stats["expense_by_category"].items(),
+            key=lambda x: abs(x[1]),
+            reverse=True,
+        ):
+            text += f"• {category}: {amount}\n"
+
+    if stats["income_by_category"]:
+        text += "\nДоходы по категориям:\n"
+        for category, amount in sorted(
+            stats["income_by_category"].items(),
+            key=lambda x: abs(x[1]),
+            reverse=True,
+        ):
+            text += f"• {category}: +{amount}\n"
+
+    return text
+
 
 async def ask_ai(user_id, text):
+    if not OPENROUTER_API_KEY:
+        return "OPENROUTER_API_KEY не найден в .env"
+
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     headers = {
@@ -97,162 +390,210 @@ async def ask_ai(user_id, text):
         {
             "role": "system",
             "content": (
-                "Ты встроенный AI ассистент внутри Telegram-бота пользователя.\n"
-                "Ты имеешь доступ к его задачам, финансам и дневнику.\n\n"
-
-                "ВАЖНО:\n"
-                "- НЕ говори, что у тебя нет доступа к данным\n"
-                "- НЕ упоминай банки, приложения и ограничения\n"
-                "- ты уже работаешь с его данными\n\n"
-
-                "Ты помогаешь:\n"
-                "- анализировать финансы\n"
-                "- обсуждать задачи\n"
-                "- поддерживать пользователя\n\n"
-
-                "Отвечай просто, по-человечески, без лишнего пафоса.\n"
-                "Без markdown, без **, без >.\n"
-            )
+                "Ты встроенный AI ассистент внутри Telegram-бота пользователя. "
+                "Ты помогаешь с задачами, финансами, дневником и поддержкой. "
+                "Если пользователь спрашивает точные финансы или задачи, не выдумывай данные. "
+                "Отвечай просто, коротко, по-человечески. "
+                "Без markdown, без звездочек, без цитат."
+            ),
         }
     ]
 
-    for m in get_memory(user_id):
-        messages.append(m)
+    for item in get_memory(user_id):
+        messages.append(item)
 
-    messages.append({"role": "user", "content": text})
+    messages.append({
+        "role": "user",
+        "content": text,
+    })
 
     data = {
         "model": "openrouter/free",
         "messages": messages,
+        "temperature": 0.7,
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=data) as resp:
-            result = await resp.json()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=data) as response:
+                result = await response.json()
 
-            if "choices" not in result:
-                return "Ошибка AI"
+                if "choices" not in result:
+                    print("OPENROUTER ERROR:", result)
+                    return "Ошибка AI 😅"
 
-            reply = result["choices"][0]["message"]["content"]
+                reply = result["choices"][0]["message"]["content"]
 
-            add_memory(user_id, "user", text)
-            add_memory(user_id, "assistant", reply)
+                add_memory(user_id, "user", text)
+                add_memory(user_id, "assistant", reply)
 
-            return reply
-# ---------- FINANCE ----------
+                return reply
 
-def load_finance():
-    return load_json(FINANCE_FILE, [])
+    except Exception as error:
+        print("AI ERROR:", error)
+        return "Ошибка подключения к AI 😅"
 
-def save_finance(data):
-    save_json(FINANCE_FILE, data)
 
-def parse_smart_finance(text):
-    text = text.lower()
+async def send_ai(message, text):
+    await bot.send_chat_action(message.chat.id, "typing")
+    reply = await ask_ai(message.from_user.id, text)
+    await message.answer(reply)
 
-    amount_match = re.search(r"(\d+)", text)
-    if not amount_match:
-        return None
 
-    amount = int(amount_match.group(1))
+async def reminder_loop():
+    while True:
+        tasks = load_tasks()
 
-    if any(word in text for word in ["потрат", "расход", "купил", "купила"]):
-        amount = -amount
-    elif any(word in text for word in ["получ", "доход", "зп", "зарплат"]):
-        amount = abs(amount)
+        for task in tasks:
+            if (
+                task.get("status", "active") == "active"
+                and task.get("date") == get_today()
+                and task.get("time") == get_current_time()
+                and not task.get("reminded")
+            ):
+                await bot.send_message(
+                    task["user_id"],
+                    f"⏰ Напоминание!\n\n{task['title']}",
+                )
+                task["reminded"] = True
 
-    words = text.split()
-    category = words[-1]
+        save_tasks(tasks)
+        await asyncio.sleep(30)
 
-    return amount, category
-
-# ---------- TASKS ----------
-
-def load_tasks():
-    return load_json(TASKS_FILE, [])
-
-def save_tasks(data):
-    save_json(TASKS_FILE, data)
-
-def parse_smart_task(text):
-    if "задач" not in text and "напомни" not in text:
-        return None
-
-    time_match = re.search(r"(\d{1,2}:\d{2})", text)
-    time = time_match.group(1) if time_match else None
-
-    return text, time
-
-# ---------- HANDLER ----------
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Привет 💫", reply_markup=main_keyboard)
+    await message.answer(
+        "Привет 💫 Я твой умный ассистент",
+        reply_markup=main_keyboard,
+    )
+
 
 @dp.message()
 async def handler(message: types.Message):
-    text = message.text
     user_id = message.from_user.id
+    text = message.text
 
-    # КНОПКИ
+    if not text:
+        await message.answer("Я пока умею работать только с текстом 🙂")
+        return
+
     if text == "📅 Сегодня":
-        tasks = load_tasks()
-        today = [t for t in tasks if t["user_id"] == user_id and t["date"] == get_today()]
-        if not today:
-            await message.answer("Нет задач")
+        tasks = get_today_tasks(user_id)
+
+        if not tasks:
+            await message.answer("На сегодня задач пока нет.")
         else:
-            await message.answer("\n".join([t["title"] for t in today]))
+            response = "📅 Задачи на сегодня:\n\n"
+
+            for index, task in enumerate(tasks, start=1):
+                task_time = f" ({task['time']})" if task.get("time") else ""
+                response += f"{index}. {task['title']}{task_time}\n"
+
+            await message.answer(response)
+
+    elif text == "➕ Добавить задачу":
+        user_states[user_id] = "task"
+        await message.answer("Напиши задачу. Например: купить хлеб в 18:00")
+
+    elif user_states.get(user_id) == "task":
+        task_time = extract_time(text)
+        add_task(user_id, text, task_time)
+        user_states[user_id] = None
+
+        if task_time:
+            await message.answer(f"Добавила задачу: {text}\nНапомню в {task_time}")
+        else:
+            await message.answer(f"Добавила задачу: {text}")
 
     elif text == "📋 Мои задачи":
         tasks = load_tasks()
-        user_tasks = [t for t in tasks if t["user_id"] == user_id]
-        await message.answer("\n".join([t["title"] for t in user_tasks]) or "Пусто")
+        user_tasks = [task for task in tasks if task.get("user_id") == user_id]
+
+        if not user_tasks:
+            await message.answer("У тебя пока нет задач.")
+        else:
+            response = "📋 Все задачи:\n\n"
+
+            for task in user_tasks:
+                status = "✅" if task.get("status") == "done" else "🟡"
+                task_time = f" ({task['time']})" if task.get("time") else ""
+                response += f"{status} {task['title']}{task_time}\n"
+
+            await message.answer(response)
+
+    elif text == "💰 Финансы":
+        user_states[user_id] = "money"
+        await message.answer("Напиши доход или расход. Например: -500 кофе или +1000 зарплата")
+
+    elif user_states.get(user_id) == "money":
+        parsed = parse_smart_finance(text)
+
+        if not parsed:
+            simple_match = re.match(r"([+-]\d+)\s*(.*)", text)
+            if not simple_match:
+                await message.answer("Не поняла формат. Попробуй так: -500 кофе или +1000 зарплата")
+                return
+
+            amount = int(simple_match.group(1))
+            category = simple_match.group(2).strip() or "без категории"
+        else:
+            amount, category = parsed
+
+        add_finance_operation(user_id, amount, category)
+        user_states[user_id] = None
+
+        await message.answer(f"Записала: {amount} ({category})")
 
     elif text == "📊 Баланс":
-        finance = load_finance()
-        total = sum(x["amount"] for x in finance if x["user_id"] == user_id)
-        await message.answer(f"Баланс: {total}")
+        balance, income, expense = calculate_balance(user_id)
 
-    # УМНЫЕ ФИНАНСЫ
-    finance_data = parse_smart_finance(text)
-    if finance_data:
-        amount, category = finance_data
-        data = load_finance()
+        await message.answer(
+            f"📊 Баланс: {balance}\n\n"
+            f"Сегодня:\n"
+            f"💚 Доходы: +{income}\n"
+            f"💸 Расходы: {expense}"
+        )
 
-        data.append({
-            "user_id": user_id,
-            "amount": amount,
-            "category": category,
-            "date": get_today()
-        })
+    elif text == "📈 Аналитика финансов":
+        await message.answer(format_finance_stats(user_id, "today"))
 
-        save_finance(data)
+    else:
+        finance_period = detect_finance_question(text)
 
-        return await message.answer(f"Записала: {amount} ({category})")
+        if finance_period:
+            await message.answer(format_finance_stats(user_id, finance_period))
+            return
 
-    # УМНЫЕ ЗАДАЧИ
-    task_data = parse_smart_task(text)
-    if task_data:
-        title, time = task_data
-        tasks = load_tasks()
+        finance_data = parse_smart_finance(text)
 
-        tasks.append({
-            "user_id": user_id,
-            "title": title,
-            "date": get_today(),
-            "time": time,
-        })
+        if finance_data:
+            amount, category = finance_data
+            add_finance_operation(user_id, amount, category)
+            await message.answer(f"Записала: {amount} ({category})")
+            return
 
-        save_tasks(tasks)
+        task_data = parse_smart_task(text)
 
-        return await message.answer("Задача добавлена")
+        if task_data:
+            title, task_time = task_data
+            add_task(user_id, title, task_time)
 
-    # AI
-    await send_ai(message, text)
+            if task_time:
+                await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
+            else:
+                await message.answer(f"Добавила задачу: {title}")
+
+            return
+
+        await send_ai(message, text)
+
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
+    asyncio.create_task(reminder_loop())
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
