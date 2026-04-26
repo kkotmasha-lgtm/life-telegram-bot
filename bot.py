@@ -119,17 +119,61 @@ def extract_time(text):
     return f"{int(hours):02d}:{minutes}"
 
 
+def parse_smart_finance(text):
+    original_text = text
+    text = text.lower()
+
+    finance_words = [
+        "расход", "потрат", "купила", "купил", "купить",
+        "доход", "получила", "получил", "зарплата", "зп",
+        "запиши расход", "запиши доход"
+    ]
+
+    if not any(word in text for word in finance_words):
+        return None
+
+    amount_match = re.search(r"([+-]?\d+)", text)
+    if not amount_match:
+        return None
+
+    amount = int(amount_match.group(1))
+
+    income_words = ["доход", "получила", "получил", "зарплата", "зп"]
+    expense_words = ["расход", "потрат", "купила", "купил", "купить"]
+
+    if any(word in text for word in income_words):
+        amount = abs(amount)
+    elif any(word in text for word in expense_words):
+        amount = -abs(amount)
+    elif amount == 0:
+        return None
+
+    clean = original_text.lower()
+    clean = re.sub(r"запиши", "", clean)
+    clean = re.sub(r"доход|расход|получила|получил|потратила|потратил|купила|купил|купить", "", clean)
+    clean = re.sub(r"[+-]?\d+", "", clean)
+    clean = re.sub(r"\bр\b|\bруб\b|\bрублей\b|\bсегодня\b", "", clean)
+    clean = clean.strip()
+
+    category_words = clean.split()
+    category = category_words[-1] if category_words else "без категории"
+
+    return amount, category
+
+
 def parse_smart_task(text):
     lower_text = text.lower()
 
-    if not any(word in lower_text for word in [
+    task_words = [
         "добавь задачу",
         "запиши задачу",
         "создай задачу",
         "поставь задачу",
         "напомни",
         "напомнить",
-    ]):
+    ]
+
+    if not any(word in lower_text for word in task_words):
         return None
 
     task_time = extract_time(text)
@@ -144,7 +188,6 @@ def parse_smart_task(text):
     task_text = re.sub(r"напомнить", "", task_text, flags=re.IGNORECASE)
 
     task_text = re.sub(r"\bсегодня\b", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"\bзавтра\b", "", task_text, flags=re.IGNORECASE)
 
     if task_time:
         task_text = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", task_text, flags=re.IGNORECASE)
@@ -156,7 +199,22 @@ def parse_smart_task(text):
         return None
 
     return task_text, task_time
-    
+
+
+def add_finance_operation(user_id, amount, category):
+    finance = load_finance()
+
+    finance.append({
+        "user_id": user_id,
+        "amount": amount,
+        "category": category,
+        "date": get_today(),
+        "time": get_current_time(),
+    })
+
+    save_finance(finance)
+
+
 def add_task(user_id, title, task_time=None):
     tasks = load_tasks()
 
@@ -209,6 +267,18 @@ def calculate_balance(user_id):
     return balance, today_income, today_expense
 
 
+def detect_balance_question(text):
+    text = text.lower()
+    return any(word in text for word in [
+        "баланс",
+        "покажи баланс",
+        "какой баланс",
+        "остаток",
+        "покажи остаток",
+        "сколько денег",
+    ])
+
+
 def get_period_start(period):
     today = get_now().date()
 
@@ -230,8 +300,8 @@ def detect_finance_question(text):
     question_words = [
         "какие расходы", "какие доходы", "покажи расходы",
         "покажи доходы", "финансы за", "расходы за",
-        "доходы за", "сколько потратила", "сколько получила",
-        "операции сегодня", "операции за"
+        "доходы за", "сколько потратила", "сколько получил",
+        "сколько получила", "операции сегодня", "операции за"
     ]
 
     if not any(word in text for word in question_words):
@@ -315,24 +385,6 @@ def format_finance_stats(user_id, period):
 
         sign = "+" if amount > 0 else ""
         text += f"• {time} {sign}{amount} — {category}\n"
-
-    if stats["expense_by_category"]:
-        text += "\nРасходы по категориям:\n"
-        for category, amount in sorted(
-            stats["expense_by_category"].items(),
-            key=lambda x: abs(x[1]),
-            reverse=True,
-        ):
-            text += f"• {category}: {amount}\n"
-
-    if stats["income_by_category"]:
-        text += "\nДоходы по категориям:\n"
-        for category, amount in sorted(
-            stats["income_by_category"].items(),
-            key=lambda x: abs(x[1]),
-            reverse=True,
-        ):
-            text += f"• {category}: +{amount}\n"
 
     return text
 
@@ -453,22 +505,31 @@ async def handler(message: types.Message):
                 response += f"{index}. {task['title']}{task_time}\n"
 
             await message.answer(response)
+        return
 
-    elif text == "➕ Добавить задачу":
+    if text == "➕ Добавить задачу":
         user_states[user_id] = "task"
         await message.answer("Напиши задачу. Например: купить хлеб в 18:00")
+        return
 
-    elif user_states.get(user_id) == "task":
+    if user_states.get(user_id) == "task":
         task_time = extract_time(text)
-        add_task(user_id, text, task_time)
+        title = text
+
+        if task_time:
+            title = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", title, flags=re.IGNORECASE)
+            title = re.sub(r"\d{1,2}:\d{2}", "", title).strip()
+
+        add_task(user_id, title, task_time)
         user_states[user_id] = None
 
         if task_time:
-            await message.answer(f"Добавила задачу: {text}\nНапомню в {task_time}")
+            await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
         else:
-            await message.answer(f"Добавила задачу: {text}")
+            await message.answer(f"Добавила задачу: {title}")
+        return
 
-    elif text == "📋 Мои задачи":
+    if text == "📋 Мои задачи":
         tasks = load_tasks()
         user_tasks = [task for task in tasks if task.get("user_id") == user_id]
 
@@ -483,12 +544,14 @@ async def handler(message: types.Message):
                 response += f"{status} {task['title']}{task_time}\n"
 
             await message.answer(response)
+        return
 
-    elif text == "💰 Финансы":
+    if text == "💰 Финансы":
         user_states[user_id] = "money"
         await message.answer("Напиши доход или расход. Например: -500 кофе или +1000 зарплата")
+        return
 
-    elif user_states.get(user_id) == "money":
+    if user_states.get(user_id) == "money":
         parsed = parse_smart_finance(text)
 
         if not parsed:
@@ -506,8 +569,9 @@ async def handler(message: types.Message):
         user_states[user_id] = None
 
         await message.answer(f"Записала: {amount} ({category})")
+        return
 
-    elif text == "📊 Баланс":
+    if text == "📊 Баланс" or detect_balance_question(text):
         balance, income, expense = calculate_balance(user_id)
 
         await message.answer(
@@ -516,39 +580,40 @@ async def handler(message: types.Message):
             f"💚 Доходы: +{income}\n"
             f"💸 Расходы: {expense}"
         )
+        return
 
-    elif text == "📈 Аналитика финансов":
+    if text == "📈 Аналитика финансов":
         await message.answer(format_finance_stats(user_id, "today"))
+        return
 
-    else:
-        finance_period = detect_finance_question(text)
+    finance_period = detect_finance_question(text)
 
-        if finance_period:
-            await message.answer(format_finance_stats(user_id, finance_period))
-            return
+    if finance_period:
+        await message.answer(format_finance_stats(user_id, finance_period))
+        return
 
-        finance_data = parse_smart_finance(text)
+    task_data = parse_smart_task(text)
 
-        if finance_data:
-            amount, category = finance_data
-            add_finance_operation(user_id, amount, category)
-            await message.answer(f"Записала: {amount} ({category})")
-            return
+    if task_data:
+        title, task_time = task_data
+        add_task(user_id, title, task_time)
 
-        task_data = parse_smart_task(text)
+        if task_time:
+            await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
+        else:
+            await message.answer(f"Добавила задачу: {title}")
 
-        if task_data:
-            title, task_time = task_data
-            add_task(user_id, title, task_time)
+        return
 
-            if task_time:
-                await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
-            else:
-                await message.answer(f"Добавила задачу: {title}")
+    finance_data = parse_smart_finance(text)
 
-            return
+    if finance_data:
+        amount, category = finance_data
+        add_finance_operation(user_id, amount, category)
+        await message.answer(f"Записала: {amount} ({category})")
+        return
 
-        await send_ai(message, text)
+    await send_ai(message, text)
 
 
 async def main():
