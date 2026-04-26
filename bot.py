@@ -136,6 +136,77 @@ def extract_time(text):
     return f"{hours:02d}:{minutes:02d}"
 
 
+def extract_date(text):
+    lower_text = text.lower()
+    now = get_now()
+    today = now.date()
+
+    if "завтра" in lower_text:
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if "послезавтра" in lower_text:
+        return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+
+    if "через месяц" in lower_text:
+        month = now.month + 1
+        year = now.year
+
+        if month > 12:
+            month = 1
+            year += 1
+
+        day = min(now.day, 28)
+        return datetime(year, month, day, tzinfo=TIMEZONE).strftime("%Y-%m-%d")
+
+    match = re.search(r"через\s+(\d+)\s+д", lower_text)
+    if match:
+        days = int(match.group(1))
+        return (today + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    match = re.search(r"через\s+(\d+)\s+нед", lower_text)
+    if match:
+        weeks = int(match.group(1))
+        return (today + timedelta(weeks=weeks)).strftime("%Y-%m-%d")
+
+    match = re.search(r"через\s+(\d+)\s+мес", lower_text)
+    if match:
+        months = int(match.group(1))
+        month = now.month + months
+        year = now.year
+
+        while month > 12:
+            month -= 12
+            year += 1
+
+        day = min(now.day, 28)
+        return datetime(year, month, day, tzinfo=TIMEZONE).strftime("%Y-%m-%d")
+
+    match = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\b", text)
+    if match:
+        day = int(match.group(1))
+        month = int(match.group(2))
+        year_text = match.group(3)
+
+        if year_text:
+            year = int(year_text)
+            if year < 100:
+                year += 2000
+        else:
+            year = now.year
+
+        try:
+            date_obj = datetime(year, month, day, tzinfo=TIMEZONE).date()
+
+            if not year_text and date_obj < today:
+                date_obj = datetime(year + 1, month, day, tzinfo=TIMEZONE).date()
+
+            return date_obj.strftime("%Y-%m-%d")
+        except Exception:
+            return get_today()
+
+    return get_today()
+
+
 def normalize_text(text):
     text = text.lower()
     text = text.replace("ё", "е")
@@ -149,17 +220,9 @@ def parse_smart_finance(text):
     text = text.lower()
 
     finance_words = [
-        "расход",
-        "потрат",
-        "купила",
-        "купил",
-        "доход",
-        "получила",
-        "получил",
-        "зарплата",
-        "зп",
-        "запиши расход",
-        "запиши доход",
+        "расход", "потрат", "купила", "купил",
+        "доход", "получила", "получил", "зарплата", "зп",
+        "запиши расход", "запиши доход",
     ]
 
     if not any(word in text for word in finance_words):
@@ -171,20 +234,8 @@ def parse_smart_finance(text):
 
     amount = int(amount_match.group(1))
 
-    income_words = [
-        "доход",
-        "получила",
-        "получил",
-        "зарплата",
-        "зп",
-    ]
-
-    expense_words = [
-        "расход",
-        "потрат",
-        "купила",
-        "купил",
-    ]
+    income_words = ["доход", "получила", "получил", "зарплата", "зп"]
+    expense_words = ["расход", "потрат", "купила", "купил"]
 
     if any(word in text for word in income_words):
         amount = abs(amount)
@@ -226,8 +277,10 @@ def parse_smart_task(text):
         return None
 
     task_time = extract_time(text)
+    task_date = extract_date(text)
 
     task_text = text
+
     task_text = re.sub(r"добавь задачу", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"запиши задачу", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"создай задачу", "", task_text, flags=re.IGNORECASE)
@@ -237,6 +290,13 @@ def parse_smart_task(text):
     task_text = re.sub(r"напомнить", "", task_text, flags=re.IGNORECASE)
 
     task_text = re.sub(r"\bсегодня\b", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"\bзавтра\b", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"\bпослезавтра\b", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"через\s+\d+\s+д\w*", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"через\s+\d+\s+нед\w*", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"через\s+\d+\s+мес\w*", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"через\s+месяц", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b", "", task_text)
 
     if task_time:
         task_text = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", task_text, flags=re.IGNORECASE)
@@ -247,7 +307,7 @@ def parse_smart_task(text):
     if not task_text:
         return None
 
-    return task_text, task_time
+    return task_text, task_date, task_time
 
 
 def add_finance_operation(user_id, amount, category):
@@ -264,13 +324,13 @@ def add_finance_operation(user_id, amount, category):
     save_finance(finance)
 
 
-def add_task(user_id, title, task_time=None):
+def add_task(user_id, title, task_date=None, task_time=None):
     tasks = load_tasks()
 
     task = {
         "user_id": user_id,
         "title": title,
-        "date": get_today(),
+        "date": task_date or get_today(),
         "status": "active",
         "reminded": False,
     }
@@ -284,27 +344,21 @@ def add_task(user_id, title, task_time=None):
 
 def get_user_active_tasks(user_id):
     tasks = load_tasks()
-
     result = []
 
     for index, task in enumerate(tasks):
-        if (
-            task.get("user_id") == user_id
-            and task.get("status", "active") == "active"
-        ):
+        if task.get("user_id") == user_id and task.get("status", "active") == "active":
             result.append((index, task))
 
     return result
 
 
 def extract_task_number(text):
-    text = text.lower()
-
-    match = re.search(r"\b(\d+)\s*(?:задач|задачу|задача|задачи)\b", text)
+    match = re.search(r"\b(\d+)\s*(?:задач|задачу|задача|задачи)\b", text.lower())
     if match:
         return int(match.group(1))
 
-    match = re.search(r"\b(?:задач|задачу|задача|задачи)\s*(\d+)\b", text)
+    match = re.search(r"\b(?:задач|задачу|задача|задачи)\s*(\d+)\b", text.lower())
     if match:
         return int(match.group(1))
 
@@ -314,34 +368,22 @@ def extract_task_number(text):
 def clean_task_command_text(text):
     clean = text
 
-    clean = re.sub(r"отмени", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"отменить", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"удали", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"удалить", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"убери", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"убрать", "", clean, flags=re.IGNORECASE)
+    words = [
+        "отмени", "отменить", "удали", "удалить", "убери", "убрать",
+        "выполнила", "выполнил", "выполнено", "выполнена",
+        "отметь", "закрой", "готово", "сделала", "сделал",
+        "последнюю", "последняя", "последней",
+    ]
 
-    clean = re.sub(r"выполнила", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"выполнил", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"выполнено", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"выполнена", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"отметь", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"закрой", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"готово", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"сделала", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"сделал", "", clean, flags=re.IGNORECASE)
+    for word in words:
+        clean = re.sub(word, "", clean, flags=re.IGNORECASE)
 
-    clean = re.sub(r"последнюю", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"последняя", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"последней", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"последн\w*", "", clean, flags=re.IGNORECASE)
-
     clean = re.sub(r"\b\d+\s*(задач|задачу|задача|задачи)\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\b(задач|задачу|задача|задачи)\s*\d+\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bзадач[ауи]?\b", "", clean, flags=re.IGNORECASE)
 
-    clean = clean.strip()
-    return clean
+    return clean.strip()
 
 
 def detect_delete_task(text):
@@ -350,13 +392,7 @@ def detect_delete_task(text):
     return (
         "задач" in text
         and any(word in text for word in [
-            "удали",
-            "удалить",
-            "убери",
-            "убрать",
-            "отмени",
-            "отменить",
-            "отмена",
+            "удали", "удалить", "убери", "убрать", "отмени", "отменить", "отмена"
         ])
     )
 
@@ -367,16 +403,8 @@ def detect_complete_task(text):
     return (
         "задач" in text
         and any(word in text for word in [
-            "выполнила",
-            "выполнил",
-            "выполнено",
-            "выполнена",
-            "отметь",
-            "готово",
-            "сделала",
-            "сделал",
-            "закрой",
-            "закрыть",
+            "выполнила", "выполнил", "выполнено", "выполнена",
+            "отметь", "готово", "сделала", "сделал", "закрой", "закрыть"
         ])
     )
 
@@ -388,9 +416,7 @@ def delete_task_by_text(user_id, text):
     if not active_tasks:
         return None
 
-    lower_text = text.lower()
-
-    if "последн" in lower_text:
+    if "последн" in text.lower():
         index, task = active_tasks[-1]
         deleted_task = tasks.pop(index)
         save_tasks(tasks)
@@ -398,12 +424,11 @@ def delete_task_by_text(user_id, text):
 
     task_number = extract_task_number(text)
 
-    if task_number:
-        if 1 <= task_number <= len(active_tasks):
-            index, task = active_tasks[task_number - 1]
-            deleted_task = tasks.pop(index)
-            save_tasks(tasks)
-            return deleted_task
+    if task_number and 1 <= task_number <= len(active_tasks):
+        index, task = active_tasks[task_number - 1]
+        deleted_task = tasks.pop(index)
+        save_tasks(tasks)
+        return deleted_task
 
     query = normalize_text(clean_task_command_text(text))
 
@@ -426,9 +451,7 @@ def complete_task_by_text(user_id, text):
     if not active_tasks:
         return None
 
-    lower_text = text.lower()
-
-    if "последн" in lower_text:
+    if "последн" in text.lower():
         index, task = active_tasks[-1]
         tasks[index]["status"] = "done"
         tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
@@ -437,13 +460,12 @@ def complete_task_by_text(user_id, text):
 
     task_number = extract_task_number(text)
 
-    if task_number:
-        if 1 <= task_number <= len(active_tasks):
-            index, task = active_tasks[task_number - 1]
-            tasks[index]["status"] = "done"
-            tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
-            save_tasks(tasks)
-            return tasks[index]
+    if task_number and 1 <= task_number <= len(active_tasks):
+        index, task = active_tasks[task_number - 1]
+        tasks[index]["status"] = "done"
+        tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+        save_tasks(tasks)
+        return tasks[index]
 
     query = normalize_text(clean_task_command_text(text))
 
@@ -497,12 +519,8 @@ def detect_balance_question(text):
     text = text.lower()
 
     return any(word in text for word in [
-        "баланс",
-        "покажи баланс",
-        "какой баланс",
-        "остаток",
-        "покажи остаток",
-        "сколько денег",
+        "баланс", "покажи баланс", "какой баланс",
+        "остаток", "покажи остаток", "сколько денег",
     ])
 
 
@@ -525,18 +543,10 @@ def detect_finance_question(text):
     text = text.lower()
 
     question_words = [
-        "какие расходы",
-        "какие доходы",
-        "покажи расходы",
-        "покажи доходы",
-        "финансы за",
-        "расходы за",
-        "доходы за",
-        "сколько потратила",
-        "сколько получил",
-        "сколько получила",
-        "операции сегодня",
-        "операции за",
+        "какие расходы", "какие доходы", "покажи расходы",
+        "покажи доходы", "финансы за", "расходы за",
+        "доходы за", "сколько потратила", "сколько получил",
+        "сколько получила", "операции сегодня", "операции за",
     ]
 
     if not any(word in text for word in question_words):
@@ -712,18 +722,32 @@ async def send_ai(message, text):
 async def reminder_loop():
     while True:
         tasks = load_tasks()
+        now = get_now()
         changed = False
 
         for task in tasks:
             if not isinstance(task, dict):
                 continue
 
-            if (
-                task.get("status", "active") == "active"
-                and task.get("date") == get_today()
-                and task.get("time") == get_current_time()
-                and not task.get("reminded")
-            ):
+            if task.get("status", "active") != "active":
+                continue
+
+            if task.get("reminded"):
+                continue
+
+            task_time = task.get("time")
+            if not task_time:
+                continue
+
+            try:
+                task_datetime = datetime.strptime(
+                    f"{task.get('date')} {task_time}",
+                    "%Y-%m-%d %H:%M",
+                ).replace(tzinfo=TIMEZONE)
+            except Exception:
+                continue
+
+            if task_datetime <= now:
                 await bot.send_message(
                     task["user_id"],
                     f"⏰ Напоминание!\n\n{task['title']}",
@@ -772,24 +796,34 @@ async def handler(message: types.Message):
 
     if text == "➕ Добавить задачу":
         user_states[user_id] = "task"
-        await message.answer("Напиши задачу. Например: купить хлеб в 18:00")
+        await message.answer("Напиши задачу. Например: купить хлеб завтра в 18:00")
         return
 
     if user_states.get(user_id) == "task":
         task_time = extract_time(text)
+        task_date = extract_date(text)
+
         title = text
+        title = re.sub(r"\bсегодня\b", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"\bзавтра\b", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"\bпослезавтра\b", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"через\s+\d+\s+д\w*", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"через\s+\d+\s+нед\w*", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"через\s+\d+\s+мес\w*", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"через\s+месяц", "", title, flags=re.IGNORECASE)
+        title = re.sub(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b", "", title)
 
         if task_time:
             title = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", title, flags=re.IGNORECASE)
             title = re.sub(r"\d{1,2}:\d{2}", "", title)
 
-        title = re.sub(r"\bсегодня\b", "", title, flags=re.IGNORECASE).strip()
+        title = title.strip()
 
-        add_task(user_id, title, task_time)
+        add_task(user_id, title, task_date, task_time)
         user_states[user_id] = None
 
         if task_time:
-            await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
+            await message.answer(f"Добавила задачу: {title}\nНапомню {task_date} в {task_time}")
         else:
             await message.answer(f"Добавила задачу: {title}")
 
@@ -806,8 +840,10 @@ async def handler(message: types.Message):
 
             for index, task in enumerate(user_tasks, start=1):
                 status = "✅" if task.get("status") == "done" else "🟡"
-                task_time = f" ({task['time']})" if task.get("time") else ""
-                response += f"{index}. {status} {task['title']}{task_time}\n"
+                task_date = task.get("date", "")
+                task_time = task.get("time", "")
+                datetime_text = f" ({task_date} {task_time})" if task_time else f" ({task_date})"
+                response += f"{index}. {status} {task['title']}{datetime_text}\n"
 
             await message.answer(response)
 
@@ -883,11 +919,11 @@ async def handler(message: types.Message):
     task_data = parse_smart_task(text)
 
     if task_data:
-        title, task_time = task_data
-        add_task(user_id, title, task_time)
+        title, task_date, task_time = task_data
+        add_task(user_id, title, task_date, task_time)
 
         if task_time:
-            await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
+            await message.answer(f"Добавила задачу: {title}\nНапомню {task_date} в {task_time}")
         else:
             await message.answer(f"Добавила задачу: {title}")
 
