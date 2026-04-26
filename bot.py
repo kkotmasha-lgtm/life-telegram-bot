@@ -26,11 +26,14 @@ TASKS_FILE = "tasks.json"
 DAILY_MESSAGES_FILE = "daily_messages.json"
 JOURNAL_FILE = "journal.json"
 FINANCE_FILE = "finance.json"
+MEMORY_FILE = "memory.json"
 
 TIMEZONE = ZoneInfo("Europe/Moscow")
 
 MORNING_TIME = "08:00"
 EVENING_TIME = "23:00"
+
+MAX_MEMORY_MESSAGES = 20
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -133,6 +136,39 @@ def load_finance():
 
 def save_finance(finance):
     save_json(FINANCE_FILE, finance)
+
+
+def load_memory():
+    return load_json(MEMORY_FILE, {})
+
+
+def save_memory(memory):
+    save_json(MEMORY_FILE, memory)
+
+
+def add_to_memory(user_id, role, content):
+    memory = load_memory()
+    user_key = str(user_id)
+
+    if user_key not in memory:
+        memory[user_key] = []
+
+    memory[user_key].append({
+        "role": role,
+        "content": content,
+        "date": get_today(),
+        "time": get_current_time(),
+    })
+
+    memory[user_key] = memory[user_key][-MAX_MEMORY_MESSAGES:]
+
+    save_memory(memory)
+
+
+def get_user_memory(user_id):
+    memory = load_memory()
+    user_key = str(user_id)
+    return memory.get(user_key, [])[-MAX_MEMORY_MESSAGES:]
 
 
 def get_today_tasks(user_id):
@@ -293,7 +329,7 @@ def get_known_user_ids():
     return list(user_ids)
 
 
-async def ask_ai(text):
+async def ask_ai(user_id, text):
     if not OPENROUTER_API_KEY:
         return "❌ OPENROUTER_API_KEY не найден в .env"
 
@@ -306,23 +342,34 @@ async def ask_ai(text):
         "X-OpenRouter-Title": "Life Telegram Bot",
     }
 
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Ты мягкий, заботливый и умный личный ассистент. "
+                "Помогаешь с планированием, задачами, дневником, финансами и поддержкой. "
+                "Ты помнишь контекст последних сообщений пользователя. "
+                "Не дави, не критикуй, говори тепло, по делу и по-человечески. "
+                "Пиши на русском."
+            ),
+        }
+    ]
+
+    for item in get_user_memory(user_id):
+        if item["role"] in ["user", "assistant"]:
+            messages.append({
+                "role": item["role"],
+                "content": item["content"],
+            })
+
+    messages.append({
+        "role": "user",
+        "content": text,
+    })
+
     data = {
         "model": "openrouter/free",
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Ты мягкий, заботливый и умный личный ассистент. "
-                    "Помогаешь с планированием, задачами, дневником, финансами и поддержкой. "
-                    "Не дави, не критикуй, говори тепло, по делу и по-человечески. "
-                    "Пиши на русском."
-                ),
-            },
-            {
-                "role": "user",
-                "content": text,
-            },
-        ],
+        "messages": messages,
         "temperature": 0.7,
     }
 
@@ -335,11 +382,22 @@ async def ask_ai(text):
                     print("OPENROUTER ERROR:", result)
                     return f"❌ Ошибка AI:\n{result}"
 
-                return result["choices"][0]["message"]["content"]
+                reply = result["choices"][0]["message"]["content"]
+
+                add_to_memory(user_id, "user", text)
+                add_to_memory(user_id, "assistant", reply)
+
+                return reply
 
     except Exception as error:
         print("AI ошибка:", error)
         return "❌ У меня сейчас не получилось ответить как AI. Попробуй ещё раз."
+
+
+async def send_ai_answer(message, text):
+    await bot.send_chat_action(message.chat.id, "typing")
+    reply = await ask_ai(message.from_user.id, text)
+    await message.answer(reply)
 
 
 async def reminder_loop():
@@ -554,9 +612,11 @@ async def handler(message: types.Message):
         save_journal(journal)
         user_states[user_id] = None
 
+        await bot.send_chat_action(message.chat.id, "typing")
+
         ai_reply = await ask_ai(
-            f"Я записала в дневник: {text}. "
-            f"Дай короткий, мягкий поддерживающий отклик."
+            user_id,
+            f"Я записала в дневник: {text}. Дай короткий, мягкий поддерживающий отклик."
         )
 
         await message.answer(f"📓 Записала\n\n{ai_reply}")
@@ -608,8 +668,7 @@ async def handler(message: types.Message):
         )
 
     else:
-        reply = await ask_ai(text)
-        await message.answer(reply)
+        await send_ai_answer(message, text)
 
 
 async def main():
