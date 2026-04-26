@@ -1,5 +1,3 @@
-# --- ВСТАВЬ ВЕСЬ ЭТОТ ФАЙЛ В bot.py ---
-
 import asyncio
 import json
 import os
@@ -61,18 +59,14 @@ finance_analytics_keyboard = InlineKeyboardMarkup(
     ]
 )
 
-
 def get_now():
     return datetime.now(TIMEZONE)
-
 
 def get_today():
     return get_now().strftime("%Y-%m-%d")
 
-
 def get_current_time():
     return get_now().strftime("%H:%M")
-
 
 def load_json(filename, default):
     if not os.path.exists(filename):
@@ -80,11 +74,9 @@ def load_json(filename, default):
     with open(filename, "r", encoding="utf-8") as file:
         return json.load(file)
 
-
 def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2)
-
 
 def extract_time(text):
     match = re.search(r"(\d{1,2}:\d{2})", text)
@@ -92,7 +84,6 @@ def extract_time(text):
         return None
     hours, minutes = match.group(1).split(":")
     return f"{int(hours):02d}:{minutes}"
-
 
 def load_tasks():
     tasks = load_json(TASKS_FILE, [])
@@ -103,34 +94,20 @@ def load_tasks():
     save_json(TASKS_FILE, tasks)
     return tasks
 
-
 def save_tasks(tasks):
     save_json(TASKS_FILE, tasks)
-
 
 def load_journal():
     return load_json(JOURNAL_FILE, [])
 
-
 def save_journal(journal):
     save_json(JOURNAL_FILE, journal)
-
-
-def load_daily_messages():
-    return load_json(DAILY_MESSAGES_FILE, {})
-
-
-def save_daily_messages(data):
-    save_json(DAILY_MESSAGES_FILE, data)
-
 
 def load_finance():
     return load_json(FINANCE_FILE, [])
 
-
 def save_finance(finance):
     save_json(FINANCE_FILE, finance)
-
 
 def get_today_tasks(user_id):
     tasks = load_tasks()
@@ -141,7 +118,6 @@ def get_today_tasks(user_id):
         and task["status"] == "active"
     ]
 
-
 def parse_money(text):
     match = re.match(r"([+-]\d+)\s*(.*)", text)
     if not match:
@@ -149,7 +125,6 @@ def parse_money(text):
     amount = int(match.group(1))
     category = match.group(2).strip() or "без категории"
     return amount, category
-
 
 def calculate_balance(user_id):
     finance = load_finance()
@@ -163,10 +138,10 @@ def calculate_balance(user_id):
 
     return balance, today_income, today_expense
 
-
+# 🔥 ИСПРАВЛЕННЫЙ AI (НЕ ПАДАЕТ)
 async def ask_ai(text):
     if not GROQ_API_KEY:
-        return "AI ключ не найден 😅"
+        return "❌ GROQ_API_KEY не найден"
 
     url = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -178,21 +153,29 @@ async def ask_ai(text):
     data = {
         "model": "llama3-70b-8192",
         "messages": [
-            {"role": "system", "content": "Ты умный и дружелюбный ассистент. Отвечай кратко и по делу."},
+            {"role": "system", "content": "Ты дружелюбный ассистент"},
             {"role": "user", "content": text},
         ],
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=data) as response:
-            result = await response.json()
-            return result["choices"][0]["message"]["content"]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=data) as response:
+                result = await response.json()
 
+                if "choices" not in result:
+                    print("GROQ ERROR:", result)
+                    return f"❌ Ошибка AI:\n{result}"
+
+                return result["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        print("AI EXCEPTION:", e)
+        return "❌ Ошибка подключения к AI"
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer("Привет 💫 Я твой ассистент", reply_markup=main_keyboard)
-
 
 @dp.message()
 async def handler(message: types.Message):
@@ -202,10 +185,9 @@ async def handler(message: types.Message):
     if text == "📅 Сегодня":
         tasks = get_today_tasks(user_id)
         if not tasks:
-            await message.answer("Задач нет ✨")
+            await message.answer("Задач нет")
         else:
-            response = "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(tasks)])
-            await message.answer(response)
+            await message.answer("\n".join([t["title"] for t in tasks]))
 
     elif text == "➕ Добавить задачу":
         user_states[user_id] = "task"
@@ -222,7 +204,7 @@ async def handler(message: types.Message):
         })
         save_tasks(tasks)
         user_states[user_id] = None
-        await message.answer("Задача добавлена ✅")
+        await message.answer("Добавлено")
 
     elif text == "📓 Дневник":
         user_states[user_id] = "journal"
@@ -230,23 +212,19 @@ async def handler(message: types.Message):
 
     elif user_states.get(user_id) == "journal":
         journal = load_journal()
-        journal.append({
-            "user_id": user_id,
-            "date": get_today(),
-            "text": text,
-        })
+        journal.append({"user_id": user_id, "date": get_today(), "text": text})
         save_journal(journal)
         user_states[user_id] = None
-        await message.answer("Записала ✨")
+        await message.answer("Сохранено")
 
     elif text == "💰 Финансы":
         user_states[user_id] = "money"
-        await message.answer("Напиши: +1000 или -500")
+        await message.answer("Напиши +1000 или -500")
 
     elif user_states.get(user_id) == "money":
         parsed = parse_money(text)
         if not parsed:
-            await message.answer("Неверный формат")
+            await message.answer("Ошибка формата")
             return
         amount, category = parsed
         finance = load_finance()
@@ -258,16 +236,19 @@ async def handler(message: types.Message):
         })
         save_finance(finance)
         user_states[user_id] = None
-        await message.answer("Записано 💰")
+        await message.answer("Записано")
+
+    elif text == "📊 Баланс":
+        balance, income, expense = calculate_balance(user_id)
+        await message.answer(f"Баланс: {balance}")
 
     else:
         reply = await ask_ai(text)
         await message.answer(reply)
 
-
 async def main():
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
