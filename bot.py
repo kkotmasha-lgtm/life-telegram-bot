@@ -136,6 +136,14 @@ def extract_time(text):
     return f"{hours:02d}:{minutes:02d}"
 
 
+def normalize_text(text):
+    text = text.lower()
+    text = text.replace("ё", "е")
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
 def parse_smart_finance(text):
     original_text = text
     text = text.lower()
@@ -274,47 +282,73 @@ def add_task(user_id, title, task_time=None):
     save_tasks(tasks)
 
 
-def delete_last_task(user_id):
+def get_user_active_tasks(user_id):
     tasks = load_tasks()
 
-    for index in range(len(tasks) - 1, -1, -1):
-        task = tasks[index]
+    result = []
 
+    for index, task in enumerate(tasks):
         if (
             task.get("user_id") == user_id
             and task.get("status", "active") == "active"
         ):
-            deleted_task = tasks.pop(index)
-            save_tasks(tasks)
-            return deleted_task
+            result.append((index, task))
+
+    return result
+
+
+def extract_task_number(text):
+    text = text.lower()
+
+    match = re.search(r"\b(\d+)\s*(?:задач|задачу|задача|задачи)\b", text)
+    if match:
+        return int(match.group(1))
+
+    match = re.search(r"\b(?:задач|задачу|задача|задачи)\s*(\d+)\b", text)
+    if match:
+        return int(match.group(1))
 
     return None
 
 
-def complete_last_task(user_id):
-    tasks = load_tasks()
+def clean_task_command_text(text):
+    clean = text
 
-    for index in range(len(tasks) - 1, -1, -1):
-        task = tasks[index]
+    clean = re.sub(r"отмени", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"отменить", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"удали", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"удалить", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"убери", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"убрать", "", clean, flags=re.IGNORECASE)
 
-        if (
-            task.get("user_id") == user_id
-            and task.get("status", "active") == "active"
-        ):
-            tasks[index]["status"] = "done"
-            tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
-            save_tasks(tasks)
-            return tasks[index]
+    clean = re.sub(r"выполнила", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"выполнил", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"выполнено", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"выполнена", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"отметь", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"закрой", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"готово", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"сделала", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"сделал", "", clean, flags=re.IGNORECASE)
 
-    return None
+    clean = re.sub(r"последнюю", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"последняя", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"последней", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"последн\w*", "", clean, flags=re.IGNORECASE)
+
+    clean = re.sub(r"\b\d+\s*(задач|задачу|задача|задачи)\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b(задач|задачу|задача|задачи)\s*\d+\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bзадач[ауи]?\b", "", clean, flags=re.IGNORECASE)
+
+    clean = clean.strip()
+    return clean
 
 
-def detect_delete_last_task(text):
+def detect_delete_task(text):
     text = text.lower()
 
     return (
         "задач" in text
-        and "последн" in text
         and any(word in text for word in [
             "удали",
             "удалить",
@@ -327,17 +361,11 @@ def detect_delete_last_task(text):
     )
 
 
-def detect_complete_last_task(text):
+def detect_complete_task(text):
     text = text.lower()
 
     return (
         "задач" in text
-        and (
-            "последн" in text
-            or "выполн" in text
-            or "готов" in text
-            or "сделан" in text
-        )
         and any(word in text for word in [
             "выполнила",
             "выполнил",
@@ -351,6 +379,85 @@ def detect_complete_last_task(text):
             "закрыть",
         ])
     )
+
+
+def delete_task_by_text(user_id, text):
+    tasks = load_tasks()
+    active_tasks = get_user_active_tasks(user_id)
+
+    if not active_tasks:
+        return None
+
+    lower_text = text.lower()
+
+    if "последн" in lower_text:
+        index, task = active_tasks[-1]
+        deleted_task = tasks.pop(index)
+        save_tasks(tasks)
+        return deleted_task
+
+    task_number = extract_task_number(text)
+
+    if task_number:
+        if 1 <= task_number <= len(active_tasks):
+            index, task = active_tasks[task_number - 1]
+            deleted_task = tasks.pop(index)
+            save_tasks(tasks)
+            return deleted_task
+
+    query = normalize_text(clean_task_command_text(text))
+
+    if query:
+        for index, task in active_tasks:
+            title = normalize_text(task.get("title", ""))
+
+            if query in title or title in query:
+                deleted_task = tasks.pop(index)
+                save_tasks(tasks)
+                return deleted_task
+
+    return None
+
+
+def complete_task_by_text(user_id, text):
+    tasks = load_tasks()
+    active_tasks = get_user_active_tasks(user_id)
+
+    if not active_tasks:
+        return None
+
+    lower_text = text.lower()
+
+    if "последн" in lower_text:
+        index, task = active_tasks[-1]
+        tasks[index]["status"] = "done"
+        tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+        save_tasks(tasks)
+        return tasks[index]
+
+    task_number = extract_task_number(text)
+
+    if task_number:
+        if 1 <= task_number <= len(active_tasks):
+            index, task = active_tasks[task_number - 1]
+            tasks[index]["status"] = "done"
+            tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+            save_tasks(tasks)
+            return tasks[index]
+
+    query = normalize_text(clean_task_command_text(text))
+
+    if query:
+        for index, task in active_tasks:
+            title = normalize_text(task.get("title", ""))
+
+            if query in title or title in query:
+                tasks[index]["status"] = "done"
+                tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+                save_tasks(tasks)
+                return tasks[index]
+
+    return None
 
 
 def get_today_tasks(user_id):
@@ -697,12 +804,32 @@ async def handler(message: types.Message):
         else:
             response = "📋 Все задачи:\n\n"
 
-            for task in user_tasks:
+            for index, task in enumerate(user_tasks, start=1):
                 status = "✅" if task.get("status") == "done" else "🟡"
                 task_time = f" ({task['time']})" if task.get("time") else ""
-                response += f"{status} {task['title']}{task_time}\n"
+                response += f"{index}. {status} {task['title']}{task_time}\n"
 
             await message.answer(response)
+
+        return
+
+    if detect_delete_task(text):
+        deleted_task = delete_task_by_text(user_id, text)
+
+        if deleted_task:
+            await message.answer(f"Убрала задачу: {deleted_task['title']}")
+        else:
+            await message.answer("Не нашла такую активную задачу.")
+
+        return
+
+    if detect_complete_task(text):
+        completed_task = complete_task_by_text(user_id, text)
+
+        if completed_task:
+            await message.answer(f"Отметила выполненной: {completed_task['title']}")
+        else:
+            await message.answer("Не нашла такую активную задачу.")
 
         return
 
@@ -745,26 +872,6 @@ async def handler(message: types.Message):
 
     if text == "📈 Аналитика финансов":
         await message.answer(format_finance_stats(user_id, "today"))
-        return
-
-    if detect_delete_last_task(text):
-        deleted_task = delete_last_task(user_id)
-
-        if deleted_task:
-            await message.answer(f"Убрала задачу: {deleted_task['title']}")
-        else:
-            await message.answer("Активных задач для удаления нет.")
-
-        return
-
-    if detect_complete_last_task(text):
-        completed_task = complete_last_task(user_id)
-
-        if completed_task:
-            await message.answer(f"Отметила выполненной: {completed_task['title']}")
-        else:
-            await message.answer("Активных задач для выполнения нет.")
-
         return
 
     finance_period = detect_finance_question(text)
