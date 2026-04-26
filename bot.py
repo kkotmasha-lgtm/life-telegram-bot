@@ -128,6 +128,7 @@ def parse_smart_task(text):
         "создай задачу",
         "поставь задачу",
         "напомни",
+        "напомнить",
     ]):
         return None
 
@@ -140,6 +141,10 @@ def parse_smart_task(text):
     task_text = re.sub(r"поставь задачу", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"напомни мне", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"напомни", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"напомнить", "", task_text, flags=re.IGNORECASE)
+
+    task_text = re.sub(r"\bсегодня\b", "", task_text, flags=re.IGNORECASE)
+    task_text = re.sub(r"\bзавтра\b", "", task_text, flags=re.IGNORECASE)
 
     if task_time:
         task_text = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", task_text, flags=re.IGNORECASE)
@@ -151,6 +156,7 @@ def parse_smart_task(text):
         return None
 
     return task_text, task_time
+    
 def add_task(user_id, title, task_time=None):
     tasks = load_tasks()
 
