@@ -141,11 +141,11 @@ def extract_date(text):
     now = get_now()
     today = now.date()
 
-    if "завтра" in lower_text:
-        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-
     if "послезавтра" in lower_text:
         return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+
+    if "завтра" in lower_text:
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
 
     if "через месяц" in lower_text:
         month = now.month + 1
@@ -280,7 +280,6 @@ def parse_smart_task(text):
     task_date = extract_date(text)
 
     task_text = text
-
     task_text = re.sub(r"добавь задачу", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"запиши задачу", "", task_text, flags=re.IGNORECASE)
     task_text = re.sub(r"создай задачу", "", task_text, flags=re.IGNORECASE)
@@ -340,6 +339,17 @@ def add_task(user_id, title, task_date=None, task_time=None):
 
     tasks.append(task)
     save_tasks(tasks)
+
+
+def get_user_tasks(user_id):
+    tasks = load_tasks()
+    result = []
+
+    for index, task in enumerate(tasks):
+        if task.get("user_id") == user_id:
+            result.append((index, task))
+
+    return result
 
 
 def get_user_active_tasks(user_id):
@@ -411,21 +421,21 @@ def detect_complete_task(text):
 
 def delete_task_by_text(user_id, text):
     tasks = load_tasks()
-    active_tasks = get_user_active_tasks(user_id)
+    user_tasks = get_user_tasks(user_id)
 
-    if not active_tasks:
+    if not user_tasks:
         return None
 
     if "последн" in text.lower():
-        index, task = active_tasks[-1]
+        index, task = user_tasks[-1]
         deleted_task = tasks.pop(index)
         save_tasks(tasks)
         return deleted_task
 
     task_number = extract_task_number(text)
 
-    if task_number and 1 <= task_number <= len(active_tasks):
-        index, task = active_tasks[task_number - 1]
+    if task_number and 1 <= task_number <= len(user_tasks):
+        index, task = user_tasks[task_number - 1]
         deleted_task = tasks.pop(index)
         save_tasks(tasks)
         return deleted_task
@@ -433,7 +443,7 @@ def delete_task_by_text(user_id, text):
     query = normalize_text(clean_task_command_text(text))
 
     if query:
-        for index, task in active_tasks:
+        for index, task in user_tasks:
             title = normalize_text(task.get("title", ""))
 
             if query in title or title in query:
@@ -855,7 +865,7 @@ async def handler(message: types.Message):
         if deleted_task:
             await message.answer(f"Убрала задачу: {deleted_task['title']}")
         else:
-            await message.answer("Не нашла такую активную задачу.")
+            await message.answer("Не нашла такую задачу.")
 
         return
 
