@@ -57,8 +57,11 @@ def load_json(filename, default):
     if not os.path.exists(filename):
         return default
 
-    with open(filename, "r", encoding="utf-8") as file:
-        return json.load(file)
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return default
 
 
 def save_json(filename, data):
@@ -67,7 +70,10 @@ def save_json(filename, data):
 
 
 def load_tasks():
-    return load_json(TASKS_FILE, [])
+    data = load_json(TASKS_FILE, [])
+    if not isinstance(data, list):
+        return []
+    return [task for task in data if isinstance(task, dict)]
 
 
 def save_tasks(tasks):
@@ -75,7 +81,10 @@ def save_tasks(tasks):
 
 
 def load_finance():
-    return load_json(FINANCE_FILE, [])
+    data = load_json(FINANCE_FILE, [])
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
 
 
 def save_finance(finance):
@@ -83,7 +92,10 @@ def save_finance(finance):
 
 
 def load_memory():
-    return load_json(MEMORY_FILE, {})
+    data = load_json(MEMORY_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
 def save_memory(memory):
@@ -111,12 +123,17 @@ def get_memory(user_id):
 
 
 def extract_time(text):
-    match = re.search(r"(\d{1,2}:\d{2})", text)
+    match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
     if not match:
         return None
 
-    hours, minutes = match.group(1).split(":")
-    return f"{int(hours):02d}:{minutes}"
+    hours = int(match.group(1))
+    minutes = int(match.group(2))
+
+    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+        return None
+
+    return f"{hours:02d}:{minutes:02d}"
 
 
 def parse_smart_finance(text):
@@ -124,9 +141,17 @@ def parse_smart_finance(text):
     text = text.lower()
 
     finance_words = [
-        "расход", "потрат", "купила", "купил", "купить",
-        "доход", "получила", "получил", "зарплата", "зп",
-        "запиши расход", "запиши доход"
+        "расход",
+        "потрат",
+        "купила",
+        "купил",
+        "доход",
+        "получила",
+        "получил",
+        "зарплата",
+        "зп",
+        "запиши расход",
+        "запиши доход",
     ]
 
     if not any(word in text for word in finance_words):
@@ -138,19 +163,35 @@ def parse_smart_finance(text):
 
     amount = int(amount_match.group(1))
 
-    income_words = ["доход", "получила", "получил", "зарплата", "зп"]
-    expense_words = ["расход", "потрат", "купила", "купил", "купить"]
+    income_words = [
+        "доход",
+        "получила",
+        "получил",
+        "зарплата",
+        "зп",
+    ]
+
+    expense_words = [
+        "расход",
+        "потрат",
+        "купила",
+        "купил",
+    ]
 
     if any(word in text for word in income_words):
         amount = abs(amount)
     elif any(word in text for word in expense_words):
         amount = -abs(amount)
-    elif amount == 0:
+    else:
         return None
 
     clean = original_text.lower()
     clean = re.sub(r"запиши", "", clean)
-    clean = re.sub(r"доход|расход|получила|получил|потратила|потратил|купила|купил|купить", "", clean)
+    clean = re.sub(
+        r"доход|расход|получила|получил|потратила|потратил|потратилa|купила|купил|зарплата|зп",
+        "",
+        clean,
+    )
     clean = re.sub(r"[+-]?\d+", "", clean)
     clean = re.sub(r"\bр\b|\bруб\b|\bрублей\b|\bсегодня\b", "", clean)
     clean = clean.strip()
@@ -249,7 +290,6 @@ def calculate_balance(user_id):
     user_finance = [item for item in finance if item.get("user_id") == user_id]
 
     balance = sum(item.get("amount", 0) for item in user_finance)
-
     today = get_today()
 
     today_income = sum(
@@ -269,6 +309,7 @@ def calculate_balance(user_id):
 
 def detect_balance_question(text):
     text = text.lower()
+
     return any(word in text for word in [
         "баланс",
         "покажи баланс",
@@ -298,23 +339,30 @@ def detect_finance_question(text):
     text = text.lower()
 
     question_words = [
-        "какие расходы", "какие доходы", "покажи расходы",
-        "покажи доходы", "финансы за", "расходы за",
-        "доходы за", "сколько потратила", "сколько получил",
-        "сколько получила", "операции сегодня", "операции за"
+        "какие расходы",
+        "какие доходы",
+        "покажи расходы",
+        "покажи доходы",
+        "финансы за",
+        "расходы за",
+        "доходы за",
+        "сколько потратила",
+        "сколько получил",
+        "сколько получила",
+        "операции сегодня",
+        "операции за",
     ]
 
     if not any(word in text for word in question_words):
         return None
 
     if "месяц" in text:
-        period = "month"
-    elif "недел" in text:
-        period = "week"
-    else:
-        period = "today"
+        return "month"
 
-    return period
+    if "недел" in text:
+        return "week"
+
+    return "today"
 
 
 def get_finance_stats(user_id, period):
@@ -331,7 +379,10 @@ def get_finance_stats(user_id, period):
         if item.get("user_id") != user_id:
             continue
 
-        item_date = datetime.strptime(item.get("date"), "%Y-%m-%d").date()
+        try:
+            item_date = datetime.strptime(item.get("date"), "%Y-%m-%d").date()
+        except Exception:
+            continue
 
         if item_date < start_date:
             continue
@@ -385,6 +436,24 @@ def format_finance_stats(user_id, period):
 
         sign = "+" if amount > 0 else ""
         text += f"• {time} {sign}{amount} — {category}\n"
+
+    if stats["expense_by_category"]:
+        text += "\nРасходы по категориям:\n"
+        for category, amount in sorted(
+            stats["expense_by_category"].items(),
+            key=lambda x: abs(x[1]),
+            reverse=True,
+        ):
+            text += f"• {category}: {amount}\n"
+
+    if stats["income_by_category"]:
+        text += "\nДоходы по категориям:\n"
+        for category, amount in sorted(
+            stats["income_by_category"].items(),
+            key=lambda x: abs(x[1]),
+            reverse=True,
+        ):
+            text += f"• {category}: +{amount}\n"
 
     return text
 
@@ -457,8 +526,12 @@ async def send_ai(message, text):
 async def reminder_loop():
     while True:
         tasks = load_tasks()
+        changed = False
 
         for task in tasks:
+            if not isinstance(task, dict):
+                continue
+
             if (
                 task.get("status", "active") == "active"
                 and task.get("date") == get_today()
@@ -470,8 +543,11 @@ async def reminder_loop():
                     f"⏰ Напоминание!\n\n{task['title']}",
                 )
                 task["reminded"] = True
+                changed = True
 
-        save_tasks(tasks)
+        if changed:
+            save_tasks(tasks)
+
         await asyncio.sleep(30)
 
 
@@ -505,6 +581,7 @@ async def handler(message: types.Message):
                 response += f"{index}. {task['title']}{task_time}\n"
 
             await message.answer(response)
+
         return
 
     if text == "➕ Добавить задачу":
@@ -518,7 +595,9 @@ async def handler(message: types.Message):
 
         if task_time:
             title = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", title, flags=re.IGNORECASE)
-            title = re.sub(r"\d{1,2}:\d{2}", "", title).strip()
+            title = re.sub(r"\d{1,2}:\d{2}", "", title)
+
+        title = re.sub(r"\bсегодня\b", "", title, flags=re.IGNORECASE).strip()
 
         add_task(user_id, title, task_time)
         user_states[user_id] = None
@@ -527,6 +606,7 @@ async def handler(message: types.Message):
             await message.answer(f"Добавила задачу: {title}\nНапомню в {task_time}")
         else:
             await message.answer(f"Добавила задачу: {title}")
+
         return
 
     if text == "📋 Мои задачи":
@@ -544,6 +624,7 @@ async def handler(message: types.Message):
                 response += f"{status} {task['title']}{task_time}\n"
 
             await message.answer(response)
+
         return
 
     if text == "💰 Финансы":
@@ -556,6 +637,7 @@ async def handler(message: types.Message):
 
         if not parsed:
             simple_match = re.match(r"([+-]\d+)\s*(.*)", text)
+
             if not simple_match:
                 await message.answer("Не поняла формат. Попробуй так: -500 кофе или +1000 зарплата")
                 return
