@@ -188,7 +188,7 @@ def parse_smart_finance(text):
     clean = original_text.lower()
     clean = re.sub(r"запиши", "", clean)
     clean = re.sub(
-        r"доход|расход|получила|получил|потратила|потратил|потратилa|купила|купил|зарплата|зп",
+        r"доход|расход|получила|получил|потратила|потратил|купила|купил|зарплата|зп",
         "",
         clean,
     )
@@ -272,6 +272,77 @@ def add_task(user_id, title, task_time=None):
 
     tasks.append(task)
     save_tasks(tasks)
+
+
+def delete_last_task(user_id):
+    tasks = load_tasks()
+
+    for index in range(len(tasks) - 1, -1, -1):
+        task = tasks[index]
+
+        if (
+            task.get("user_id") == user_id
+            and task.get("status", "active") == "active"
+        ):
+            deleted_task = tasks.pop(index)
+            save_tasks(tasks)
+            return deleted_task
+
+    return None
+
+
+def complete_last_task(user_id):
+    tasks = load_tasks()
+
+    for index in range(len(tasks) - 1, -1, -1):
+        task = tasks[index]
+
+        if (
+            task.get("user_id") == user_id
+            and task.get("status", "active") == "active"
+        ):
+            tasks[index]["status"] = "done"
+            tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+            save_tasks(tasks)
+            return tasks[index]
+
+    return None
+
+
+def detect_delete_last_task(text):
+    text = text.lower()
+
+    return (
+        "задач" in text
+        and "последн" in text
+        and any(word in text for word in ["удали", "убери", "убрать", "удалить"])
+    )
+
+
+def detect_complete_last_task(text):
+    text = text.lower()
+
+    return (
+        "задач" in text
+        and (
+            "последн" in text
+            or "выполн" in text
+            or "готов" in text
+            or "сделан" in text
+        )
+        and any(word in text for word in [
+            "выполнила",
+            "выполнил",
+            "выполнено",
+            "выполнена",
+            "отметь",
+            "готово",
+            "сделала",
+            "сделал",
+            "закрой",
+            "закрыть",
+        ])
+    )
 
 
 def get_today_tasks(user_id):
@@ -666,6 +737,26 @@ async def handler(message: types.Message):
 
     if text == "📈 Аналитика финансов":
         await message.answer(format_finance_stats(user_id, "today"))
+        return
+
+    if detect_delete_last_task(text):
+        deleted_task = delete_last_task(user_id)
+
+        if deleted_task:
+            await message.answer(f"Убрала задачу: {deleted_task['title']}")
+        else:
+            await message.answer("Активных задач для удаления нет.")
+
+        return
+
+    if detect_complete_last_task(text):
+        completed_task = complete_last_task(user_id)
+
+        if completed_task:
+            await message.answer(f"Отметила выполненной: {completed_task['title']}")
+        else:
+            await message.answer("Активных задач для выполнения нет.")
+
         return
 
     finance_period = detect_finance_question(text)
