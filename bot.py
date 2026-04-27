@@ -263,7 +263,7 @@ def format_reminders_text(user_id):
     for index, task in enumerate(reminders, start=1):
         title = task.get("title", "Без названия")
         when = format_task_when(task)
-        text += f"{index}. {title} — {when}\n"
+        text += f"{index}. ⏰ {title} — {when}\n"
 
     return text
 
