@@ -9,7 +9,7 @@ from collections import defaultdict
 import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,6 +20,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TASKS_FILE = "tasks.json"
 FINANCE_FILE = "finance.json"
 MEMORY_FILE = "memory.json"
+USERS_FILE = "users.json"
 
 TIMEZONE = ZoneInfo("Europe/Moscow")
 
@@ -27,18 +28,6 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 user_states = {}
-
-main_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📅 Сегодня")],
-        [KeyboardButton(text="➕ Добавить задачу")],
-        [KeyboardButton(text="📋 Мои задачи")],
-        [KeyboardButton(text="💰 Финансы")],
-        [KeyboardButton(text="📊 Баланс")],
-        [KeyboardButton(text="📈 Аналитика финансов")],
-    ],
-    resize_keyboard=True,
-)
 
 
 def get_now():
@@ -71,9 +60,7 @@ def save_json(filename, data):
 
 def load_tasks():
     data = load_json(TASKS_FILE, [])
-    if not isinstance(data, list):
-        return []
-    return [task for task in data if isinstance(task, dict)]
+    return data if isinstance(data, list) else []
 
 
 def save_tasks(tasks):
@@ -82,9 +69,7 @@ def save_tasks(tasks):
 
 def load_finance():
     data = load_json(FINANCE_FILE, [])
-    if not isinstance(data, list):
-        return []
-    return [item for item in data if isinstance(item, dict)]
+    return data if isinstance(data, list) else []
 
 
 def save_finance(finance):
@@ -93,13 +78,36 @@ def save_finance(finance):
 
 def load_memory():
     data = load_json(MEMORY_FILE, {})
-    if not isinstance(data, dict):
-        return {}
-    return data
+    return data if isinstance(data, dict) else {}
 
 
 def save_memory(memory):
     save_json(MEMORY_FILE, memory)
+
+
+def load_users():
+    data = load_json(USERS_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_users(users):
+    save_json(USERS_FILE, users)
+
+
+def get_user_name(user_id):
+    users = load_users()
+    return users.get(str(user_id), {}).get("name")
+
+
+def save_user_name(user_id, name, message):
+    users = load_users()
+    users[str(user_id)] = {
+        "name": name,
+        "username": message.from_user.username,
+        "first_name": message.from_user.first_name,
+        "registered_at": get_now().strftime("%Y-%m-%d %H:%M"),
+    }
+    save_users(users)
 
 
 def add_memory(user_id, role, text):
@@ -109,17 +117,121 @@ def add_memory(user_id, role, text):
     if user_key not in memory:
         memory[user_key] = []
 
-    memory[user_key].append({
-        "role": role,
-        "content": text,
-    })
-
+    memory[user_key].append({"role": role, "content": text})
     memory[user_key] = memory[user_key][-20:]
     save_memory(memory)
 
 
 def get_memory(user_id):
     return load_memory().get(str(user_id), [])
+
+
+def main_menu_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📋 Задачи", callback_data="tasks_menu"),
+                InlineKeyboardButton(text="💰 Финансы", callback_data="finance_menu"),
+            ],
+            [
+                InlineKeyboardButton(text="⏰ Напоминания", callback_data="reminders_menu"),
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Обновить меню", callback_data="main_menu"),
+            ],
+        ]
+    )
+
+
+def tasks_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Добавить задачу", callback_data="add_task")],
+            [InlineKeyboardButton(text="📋 Мои задачи", callback_data="show_tasks")],
+            [InlineKeyboardButton(text="✅ Как отметить выполненной", callback_data="tasks_done_help")],
+            [InlineKeyboardButton(text="❌ Как удалить задачу", callback_data="tasks_delete_help")],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")],
+        ]
+    )
+
+
+def finance_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Записать доход/расход", callback_data="add_finance")],
+            [InlineKeyboardButton(text="📊 Баланс", callback_data="show_balance")],
+            [InlineKeyboardButton(text="📈 Аналитика", callback_data="show_finance_stats")],
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")],
+        ]
+    )
+
+
+def back_to_menu_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")]
+        ]
+    )
+
+
+def get_user_tasks(user_id):
+    return [
+        task for task in load_tasks()
+        if isinstance(task, dict) and task.get("user_id") == user_id
+    ]
+
+
+def get_active_tasks(user_id):
+    return [
+        task for task in get_user_tasks(user_id)
+        if task.get("status", "active") == "active"
+    ]
+
+
+def get_done_tasks(user_id):
+    return [
+        task for task in get_user_tasks(user_id)
+        if task.get("status") == "done"
+    ]
+
+
+def format_main_menu_text(user_id):
+    name = get_user_name(user_id) or "друг"
+
+    active_tasks = get_active_tasks(user_id)
+    done_tasks = get_done_tasks(user_id)
+
+    balance, today_income, today_expense = calculate_balance(user_id)
+
+    text = f"Привет, {name} 💫\n\n"
+    text += "Вот твоё меню:\n\n"
+
+    text += f"📋 Активные задачи: {len(active_tasks)}\n"
+
+    if active_tasks:
+        for index, task in enumerate(active_tasks[:5], start=1):
+            task_date = task.get("date", "")
+            task_time = task.get("time", "")
+            when = f" — {task_date} {task_time}".strip()
+            text += f"{index}. {task.get('title')}{when}\n"
+    else:
+        text += "Активных задач пока нет.\n"
+
+    text += f"\n✅ Выполненные задачи: {len(done_tasks)}\n"
+    text += f"\n💰 Баланс: {balance}\n"
+    text += f"Сегодня доходы: +{today_income}\n"
+    text += f"Сегодня расходы: {today_expense}\n\n"
+    text += "Выбери, что хочешь сделать:"
+
+    return text
+
+
+async def send_main_menu(chat_id, user_id):
+    await bot.send_message(
+        chat_id,
+        format_main_menu_text(user_id),
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 def extract_time(text):
@@ -130,7 +242,7 @@ def extract_time(text):
     hours = int(match.group(1))
     minutes = int(match.group(2))
 
-    if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+    if hours > 23 or minutes > 59:
         return None
 
     return f"{hours:02d}:{minutes:02d}"
@@ -160,26 +272,11 @@ def extract_date(text):
 
     match = re.search(r"через\s+(\d+)\s+д", lower_text)
     if match:
-        days = int(match.group(1))
-        return (today + timedelta(days=days)).strftime("%Y-%m-%d")
+        return (today + timedelta(days=int(match.group(1)))).strftime("%Y-%m-%d")
 
     match = re.search(r"через\s+(\d+)\s+нед", lower_text)
     if match:
-        weeks = int(match.group(1))
-        return (today + timedelta(weeks=weeks)).strftime("%Y-%m-%d")
-
-    match = re.search(r"через\s+(\d+)\s+мес", lower_text)
-    if match:
-        months = int(match.group(1))
-        month = now.month + months
-        year = now.year
-
-        while month > 12:
-            month -= 12
-            year += 1
-
-        day = min(now.day, 28)
-        return datetime(year, month, day, tzinfo=TIMEZONE).strftime("%Y-%m-%d")
+        return (today + timedelta(weeks=int(match.group(1)))).strftime("%Y-%m-%d")
 
     match = re.search(r"\b(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\b", text)
     if match:
@@ -187,19 +284,14 @@ def extract_date(text):
         month = int(match.group(2))
         year_text = match.group(3)
 
-        if year_text:
-            year = int(year_text)
-            if year < 100:
-                year += 2000
-        else:
-            year = now.year
+        year = int(year_text) if year_text else now.year
+        if year < 100:
+            year += 2000
 
         try:
             date_obj = datetime(year, month, day, tzinfo=TIMEZONE).date()
-
             if not year_text and date_obj < today:
                 date_obj = datetime(year + 1, month, day, tzinfo=TIMEZONE).date()
-
             return date_obj.strftime("%Y-%m-%d")
         except Exception:
             return get_today()
@@ -207,12 +299,218 @@ def extract_date(text):
     return get_today()
 
 
+def clean_task_text(text):
+    task_text = text
+
+    remove_patterns = [
+        r"добавь задачу",
+        r"запиши задачу",
+        r"создай задачу",
+        r"поставь задачу",
+        r"напомни мне",
+        r"напомни",
+        r"напомнить",
+        r"\bсегодня\b",
+        r"\bзавтра\b",
+        r"\bпослезавтра\b",
+        r"через\s+\d+\s+д\w*",
+        r"через\s+\d+\s+нед\w*",
+        r"через\s+\d+\s+мес\w*",
+        r"через\s+месяц",
+        r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b",
+        r"\bв\s*\d{1,2}:\d{2}\b",
+        r"\d{1,2}:\d{2}",
+    ]
+
+    for pattern in remove_patterns:
+        task_text = re.sub(pattern, "", task_text, flags=re.IGNORECASE)
+
+    return task_text.strip()
+
+
+def parse_smart_task(text):
+    lower_text = text.lower()
+
+    task_words = [
+        "добавь задачу",
+        "запиши задачу",
+        "создай задачу",
+        "поставь задачу",
+        "напомни",
+        "напомнить",
+    ]
+
+    if not any(word in lower_text for word in task_words):
+        return None
+
+    title = clean_task_text(text)
+    task_date = extract_date(text)
+    task_time = extract_time(text)
+
+    if not title:
+        return None
+
+    return title, task_date, task_time
+
+
+def add_task(user_id, title, task_date=None, task_time=None):
+    tasks = load_tasks()
+
+    task = {
+        "user_id": user_id,
+        "title": title,
+        "date": task_date or get_today(),
+        "status": "active",
+        "reminded": False,
+    }
+
+    if task_time:
+        task["time"] = task_time
+
+    tasks.append(task)
+    save_tasks(tasks)
+
+
 def normalize_text(text):
-    text = text.lower()
-    text = text.replace("ё", "е")
+    text = text.lower().replace("ё", "е")
     text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def extract_task_number(text):
+    match = re.search(r"\b(\d+)\s*(?:задач|задачу|задача|задачи)\b", text.lower())
+    if match:
+        return int(match.group(1))
+
+    match = re.search(r"\b(?:задач|задачу|задача|задачи)\s*(\d+)\b", text.lower())
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def clean_task_command_text(text):
+    clean = text
+
+    words = [
+        "отмени", "отменить", "удали", "удалить", "убери", "убрать",
+        "выполнила", "выполнил", "выполнено", "выполнена",
+        "отметь", "закрой", "готово", "сделала", "сделал",
+        "последнюю", "последняя", "последней",
+    ]
+
+    for word in words:
+        clean = re.sub(word, "", clean, flags=re.IGNORECASE)
+
+    clean = re.sub(r"последн\w*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b\d+\s*(задач|задачу|задача|задачи)\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b(задач|задачу|задача|задачи)\s*\d+\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bзадач[ауи]?\b", "", clean, flags=re.IGNORECASE)
+
+    return clean.strip()
+
+
+def detect_delete_task(text):
+    text = text.lower()
+    return (
+        "задач" in text
+        and any(word in text for word in ["удали", "удалить", "убери", "убрать", "отмени", "отменить"])
+    )
+
+
+def detect_complete_task(text):
+    text = text.lower()
+    return (
+        "задач" in text
+        and any(word in text for word in [
+            "выполнила", "выполнил", "выполнено", "выполнена",
+            "отметь", "готово", "сделала", "сделал", "закрой", "закрыть"
+        ])
+    )
+
+
+def delete_task_by_text(user_id, text):
+    tasks = load_tasks()
+    user_tasks = []
+
+    for index, task in enumerate(tasks):
+        if isinstance(task, dict) and task.get("user_id") == user_id:
+            user_tasks.append((index, task))
+
+    if not user_tasks:
+        return None
+
+    if "последн" in text.lower():
+        index, task = user_tasks[-1]
+        deleted_task = tasks.pop(index)
+        save_tasks(tasks)
+        return deleted_task
+
+    task_number = extract_task_number(text)
+
+    if task_number and 1 <= task_number <= len(user_tasks):
+        index, task = user_tasks[task_number - 1]
+        deleted_task = tasks.pop(index)
+        save_tasks(tasks)
+        return deleted_task
+
+    query = normalize_text(clean_task_command_text(text))
+
+    if query:
+        for index, task in user_tasks:
+            title = normalize_text(task.get("title", ""))
+            if query in title or title in query:
+                deleted_task = tasks.pop(index)
+                save_tasks(tasks)
+                return deleted_task
+
+    return None
+
+
+def complete_task_by_text(user_id, text):
+    tasks = load_tasks()
+    active_tasks = []
+
+    for index, task in enumerate(tasks):
+        if (
+            isinstance(task, dict)
+            and task.get("user_id") == user_id
+            and task.get("status", "active") == "active"
+        ):
+            active_tasks.append((index, task))
+
+    if not active_tasks:
+        return None
+
+    if "последн" in text.lower():
+        index, task = active_tasks[-1]
+        tasks[index]["status"] = "done"
+        tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+        save_tasks(tasks)
+        return tasks[index]
+
+    task_number = extract_task_number(text)
+
+    if task_number and 1 <= task_number <= len(active_tasks):
+        index, task = active_tasks[task_number - 1]
+        tasks[index]["status"] = "done"
+        tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+        save_tasks(tasks)
+        return tasks[index]
+
+    query = normalize_text(clean_task_command_text(text))
+
+    if query:
+        for index, task in active_tasks:
+            title = normalize_text(task.get("title", ""))
+            if query in title or title in query:
+                tasks[index]["status"] = "done"
+                tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
+                save_tasks(tasks)
+                return tasks[index]
+
+    return None
 
 
 def parse_smart_finance(text):
@@ -261,54 +559,6 @@ def parse_smart_finance(text):
     return amount, category
 
 
-def parse_smart_task(text):
-    lower_text = text.lower()
-
-    task_words = [
-        "добавь задачу",
-        "запиши задачу",
-        "создай задачу",
-        "поставь задачу",
-        "напомни",
-        "напомнить",
-    ]
-
-    if not any(word in lower_text for word in task_words):
-        return None
-
-    task_time = extract_time(text)
-    task_date = extract_date(text)
-
-    task_text = text
-    task_text = re.sub(r"добавь задачу", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"запиши задачу", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"создай задачу", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"поставь задачу", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"напомни мне", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"напомни", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"напомнить", "", task_text, flags=re.IGNORECASE)
-
-    task_text = re.sub(r"\bсегодня\b", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"\bзавтра\b", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"\bпослезавтра\b", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"через\s+\d+\s+д\w*", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"через\s+\d+\s+нед\w*", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"через\s+\d+\s+мес\w*", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"через\s+месяц", "", task_text, flags=re.IGNORECASE)
-    task_text = re.sub(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b", "", task_text)
-
-    if task_time:
-        task_text = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", task_text, flags=re.IGNORECASE)
-        task_text = re.sub(r"\d{1,2}:\d{2}", "", task_text)
-
-    task_text = task_text.strip()
-
-    if not task_text:
-        return None
-
-    return task_text, task_date, task_time
-
-
 def add_finance_operation(user_id, amount, category):
     finance = load_finance()
 
@@ -323,189 +573,9 @@ def add_finance_operation(user_id, amount, category):
     save_finance(finance)
 
 
-def add_task(user_id, title, task_date=None, task_time=None):
-    tasks = load_tasks()
-
-    task = {
-        "user_id": user_id,
-        "title": title,
-        "date": task_date or get_today(),
-        "status": "active",
-        "reminded": False,
-    }
-
-    if task_time:
-        task["time"] = task_time
-
-    tasks.append(task)
-    save_tasks(tasks)
-
-
-def get_user_tasks(user_id):
-    tasks = load_tasks()
-    result = []
-
-    for index, task in enumerate(tasks):
-        if task.get("user_id") == user_id:
-            result.append((index, task))
-
-    return result
-
-
-def get_user_active_tasks(user_id):
-    tasks = load_tasks()
-    result = []
-
-    for index, task in enumerate(tasks):
-        if task.get("user_id") == user_id and task.get("status", "active") == "active":
-            result.append((index, task))
-
-    return result
-
-
-def extract_task_number(text):
-    match = re.search(r"\b(\d+)\s*(?:задач|задачу|задача|задачи)\b", text.lower())
-    if match:
-        return int(match.group(1))
-
-    match = re.search(r"\b(?:задач|задачу|задача|задачи)\s*(\d+)\b", text.lower())
-    if match:
-        return int(match.group(1))
-
-    return None
-
-
-def clean_task_command_text(text):
-    clean = text
-
-    words = [
-        "отмени", "отменить", "удали", "удалить", "убери", "убрать",
-        "выполнила", "выполнил", "выполнено", "выполнена",
-        "отметь", "закрой", "готово", "сделала", "сделал",
-        "последнюю", "последняя", "последней",
-    ]
-
-    for word in words:
-        clean = re.sub(word, "", clean, flags=re.IGNORECASE)
-
-    clean = re.sub(r"последн\w*", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"\b\d+\s*(задач|задачу|задача|задачи)\b", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"\b(задач|задачу|задача|задачи)\s*\d+\b", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"\bзадач[ауи]?\b", "", clean, flags=re.IGNORECASE)
-
-    return clean.strip()
-
-
-def detect_delete_task(text):
-    text = text.lower()
-
-    return (
-        "задач" in text
-        and any(word in text for word in [
-            "удали", "удалить", "убери", "убрать", "отмени", "отменить", "отмена"
-        ])
-    )
-
-
-def detect_complete_task(text):
-    text = text.lower()
-
-    return (
-        "задач" in text
-        and any(word in text for word in [
-            "выполнила", "выполнил", "выполнено", "выполнена",
-            "отметь", "готово", "сделала", "сделал", "закрой", "закрыть"
-        ])
-    )
-
-
-def delete_task_by_text(user_id, text):
-    tasks = load_tasks()
-    user_tasks = get_user_tasks(user_id)
-
-    if not user_tasks:
-        return None
-
-    if "последн" in text.lower():
-        index, task = user_tasks[-1]
-        deleted_task = tasks.pop(index)
-        save_tasks(tasks)
-        return deleted_task
-
-    task_number = extract_task_number(text)
-
-    if task_number and 1 <= task_number <= len(user_tasks):
-        index, task = user_tasks[task_number - 1]
-        deleted_task = tasks.pop(index)
-        save_tasks(tasks)
-        return deleted_task
-
-    query = normalize_text(clean_task_command_text(text))
-
-    if query:
-        for index, task in user_tasks:
-            title = normalize_text(task.get("title", ""))
-
-            if query in title or title in query:
-                deleted_task = tasks.pop(index)
-                save_tasks(tasks)
-                return deleted_task
-
-    return None
-
-
-def complete_task_by_text(user_id, text):
-    tasks = load_tasks()
-    active_tasks = get_user_active_tasks(user_id)
-
-    if not active_tasks:
-        return None
-
-    if "последн" in text.lower():
-        index, task = active_tasks[-1]
-        tasks[index]["status"] = "done"
-        tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
-        save_tasks(tasks)
-        return tasks[index]
-
-    task_number = extract_task_number(text)
-
-    if task_number and 1 <= task_number <= len(active_tasks):
-        index, task = active_tasks[task_number - 1]
-        tasks[index]["status"] = "done"
-        tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
-        save_tasks(tasks)
-        return tasks[index]
-
-    query = normalize_text(clean_task_command_text(text))
-
-    if query:
-        for index, task in active_tasks:
-            title = normalize_text(task.get("title", ""))
-
-            if query in title or title in query:
-                tasks[index]["status"] = "done"
-                tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
-                save_tasks(tasks)
-                return tasks[index]
-
-    return None
-
-
-def get_today_tasks(user_id):
-    tasks = load_tasks()
-
-    return [
-        task for task in tasks
-        if task.get("user_id") == user_id
-        and task.get("date") == get_today()
-        and task.get("status", "active") == "active"
-    ]
-
-
 def calculate_balance(user_id):
     finance = load_finance()
-    user_finance = [item for item in finance if item.get("user_id") == user_id]
+    user_finance = [item for item in finance if isinstance(item, dict) and item.get("user_id") == user_id]
 
     balance = sum(item.get("amount", 0) for item in user_finance)
     today = get_today()
@@ -527,7 +597,6 @@ def calculate_balance(user_id):
 
 def detect_balance_question(text):
     text = text.lower()
-
     return any(word in text for word in [
         "баланс", "покажи баланс", "какой баланс",
         "остаток", "покажи остаток", "сколько денег",
@@ -536,9 +605,6 @@ def detect_balance_question(text):
 
 def get_period_start(period):
     today = get_now().date()
-
-    if period == "today":
-        return today
 
     if period == "week":
         return today - timedelta(days=today.weekday())
@@ -582,7 +648,7 @@ def get_finance_stats(user_id, period):
     expense_by_category = defaultdict(int)
 
     for item in finance:
-        if item.get("user_id") != user_id:
+        if not isinstance(item, dict) or item.get("user_id") != user_id:
             continue
 
         try:
@@ -595,7 +661,6 @@ def get_finance_stats(user_id, period):
 
         amount = item.get("amount", 0)
         category = item.get("category", "без категории")
-
         operations.append(item)
 
         if amount > 0:
@@ -643,24 +708,6 @@ def format_finance_stats(user_id, period):
         sign = "+" if amount > 0 else ""
         text += f"• {time} {sign}{amount} — {category}\n"
 
-    if stats["expense_by_category"]:
-        text += "\nРасходы по категориям:\n"
-        for category, amount in sorted(
-            stats["expense_by_category"].items(),
-            key=lambda x: abs(x[1]),
-            reverse=True,
-        ):
-            text += f"• {category}: {amount}\n"
-
-    if stats["income_by_category"]:
-        text += "\nДоходы по категориям:\n"
-        for category, amount in sorted(
-            stats["income_by_category"].items(),
-            key=lambda x: abs(x[1]),
-            reverse=True,
-        ):
-            text += f"• {category}: +{amount}\n"
-
     return text
 
 
@@ -681,9 +728,8 @@ async def ask_ai(user_id, text):
             "content": (
                 "Ты встроенный AI ассистент внутри Telegram-бота пользователя. "
                 "Ты помогаешь с задачами, финансами, дневником и поддержкой. "
-                "Если пользователь спрашивает точные финансы или задачи, не выдумывай данные. "
                 "Отвечай просто, коротко, по-человечески. "
-                "Без markdown, без звездочек, без цитат."
+                "Без markdown."
             ),
         }
     ]
@@ -691,10 +737,7 @@ async def ask_ai(user_id, text):
     for item in get_memory(user_id):
         messages.append(item)
 
-    messages.append({
-        "role": "user",
-        "content": text,
-    })
+    messages.append({"role": "user", "content": text})
 
     data = {
         "model": "openrouter/free",
@@ -727,6 +770,7 @@ async def send_ai(message, text):
     await bot.send_chat_action(message.chat.id, "typing")
     reply = await ask_ai(message.from_user.id, text)
     await message.answer(reply)
+    await send_main_menu(message.chat.id, message.from_user.id)
 
 
 async def reminder_loop():
@@ -773,10 +817,147 @@ async def reminder_loop():
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
+    user_id = message.from_user.id
+
+    if not get_user_name(user_id):
+        user_states[user_id] = "name"
+        await message.answer(
+            "Привет 💫\n\nКак я могу к тебе обращаться?",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
+
+    await message.answer("Привет 💫")
+    await send_main_menu(message.chat.id, user_id)
+
+
+@dp.message(Command("menu"))
+async def menu_command(message: types.Message):
+    await send_main_menu(message.chat.id, message.from_user.id)
+
+
+@dp.message(Command("help"))
+async def help_command(message: types.Message):
     await message.answer(
-        "Привет 💫 Я твой умный ассистент",
-        reply_markup=main_keyboard,
+        "Я умею вести задачи, финансы и напоминания.\n\n"
+        "Примеры:\n"
+        "напомни купить молоко завтра в 18:00\n"
+        "запиши расход 300 кофе\n"
+        "задача 1 выполнена\n"
+        "удали задачу 2",
+        reply_markup=back_to_menu_keyboard(),
     )
+
+
+@dp.callback_query()
+async def callbacks(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    data = callback.data
+
+    await callback.answer()
+
+    if data == "main_menu":
+        await callback.message.answer(format_main_menu_text(user_id), reply_markup=main_menu_keyboard())
+        return
+
+    if data == "tasks_menu":
+        await callback.message.answer(
+            "📋 Задачи\n\nЧто хочешь сделать?",
+            reply_markup=tasks_keyboard(),
+        )
+        return
+
+    if data == "finance_menu":
+        await callback.message.answer(
+            "💰 Финансы\n\nЧто хочешь сделать?",
+            reply_markup=finance_keyboard(),
+        )
+        return
+
+    if data == "reminders_menu":
+        await callback.message.answer(
+            "⏰ Напоминания\n\n"
+            "Примеры:\n"
+            "напомни выпить воды в 21:00\n"
+            "напомни позвонить завтра в 10:00\n"
+            "напомни оплатить подписку 24.05 в 09:00\n"
+            "напомни проверить через месяц в 12:00",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    if data == "add_task":
+        user_states[user_id] = "task"
+        await callback.message.answer(
+            "Напиши задачу.\n\nНапример:\nнапомни купить хлеб завтра в 18:00",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    if data == "show_tasks":
+        tasks = get_user_tasks(user_id)
+
+        if not tasks:
+            await callback.message.answer("У тебя пока нет задач.", reply_markup=back_to_menu_keyboard())
+            return
+
+        text = "📋 Мои задачи:\n\n"
+
+        for index, task in enumerate(tasks, start=1):
+            status = "✅" if task.get("status") == "done" else "🟡"
+            date = task.get("date", "")
+            time = task.get("time", "")
+            when = f" ({date} {time})" if time else f" ({date})"
+            text += f"{index}. {status} {task.get('title')}{when}\n"
+
+        await callback.message.answer(text, reply_markup=back_to_menu_keyboard())
+        return
+
+    if data == "tasks_done_help":
+        await callback.message.answer(
+            "✅ Как отметить задачу выполненной:\n\n"
+            "задача 1 выполнена\n"
+            "отметь последнюю задачу\n"
+            "задача купить молоко выполнена",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    if data == "tasks_delete_help":
+        await callback.message.answer(
+            "❌ Как удалить задачу:\n\n"
+            "удали задачу 1\n"
+            "отмени последнюю задачу\n"
+            "удали задачу купить молоко",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    if data == "add_finance":
+        user_states[user_id] = "money"
+        await callback.message.answer(
+            "Напиши доход или расход.\n\nНапример:\n-500 кофе\n+1000 зарплата\nпотратила 300 еда",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    if data == "show_balance":
+        balance, income, expense = calculate_balance(user_id)
+        await callback.message.answer(
+            f"📊 Баланс: {balance}\n\n"
+            f"Сегодня:\n"
+            f"💚 Доходы: +{income}\n"
+            f"💸 Расходы: {expense}",
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
+
+    if data == "show_finance_stats":
+        await callback.message.answer(
+            format_finance_stats(user_id, "today"),
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
 
 
 @dp.message()
@@ -788,46 +969,22 @@ async def handler(message: types.Message):
         await message.answer("Я пока умею работать только с текстом 🙂")
         return
 
-    if text == "📅 Сегодня":
-        tasks = get_today_tasks(user_id)
+    if user_states.get(user_id) == "name":
+        name = text.strip()
+        save_user_name(user_id, name, message)
+        user_states[user_id] = None
 
-        if not tasks:
-            await message.answer("На сегодня задач пока нет.")
-        else:
-            response = "📅 Задачи на сегодня:\n\n"
-
-            for index, task in enumerate(tasks, start=1):
-                task_time = f" ({task['time']})" if task.get("time") else ""
-                response += f"{index}. {task['title']}{task_time}\n"
-
-            await message.answer(response)
-
-        return
-
-    if text == "➕ Добавить задачу":
-        user_states[user_id] = "task"
-        await message.answer("Напиши задачу. Например: купить хлеб завтра в 18:00")
+        await message.answer(f"Приятно познакомиться, {name} 💫")
+        await send_main_menu(message.chat.id, user_id)
         return
 
     if user_states.get(user_id) == "task":
         task_time = extract_time(text)
         task_date = extract_date(text)
+        title = clean_task_text(text)
 
-        title = text
-        title = re.sub(r"\bсегодня\b", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"\bзавтра\b", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"\bпослезавтра\b", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"через\s+\d+\s+д\w*", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"через\s+\d+\s+нед\w*", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"через\s+\d+\s+мес\w*", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"через\s+месяц", "", title, flags=re.IGNORECASE)
-        title = re.sub(r"\b\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\b", "", title)
-
-        if task_time:
-            title = re.sub(r"\bв\s*\d{1,2}:\d{2}\b", "", title, flags=re.IGNORECASE)
-            title = re.sub(r"\d{1,2}:\d{2}", "", title)
-
-        title = title.strip()
+        if not title:
+            title = text.strip()
 
         add_task(user_id, title, task_date, task_time)
         user_states[user_id] = None
@@ -837,51 +994,7 @@ async def handler(message: types.Message):
         else:
             await message.answer(f"Добавила задачу: {title}")
 
-        return
-
-    if text == "📋 Мои задачи":
-        tasks = load_tasks()
-        user_tasks = [task for task in tasks if task.get("user_id") == user_id]
-
-        if not user_tasks:
-            await message.answer("У тебя пока нет задач.")
-        else:
-            response = "📋 Все задачи:\n\n"
-
-            for index, task in enumerate(user_tasks, start=1):
-                status = "✅" if task.get("status") == "done" else "🟡"
-                task_date = task.get("date", "")
-                task_time = task.get("time", "")
-                datetime_text = f" ({task_date} {task_time})" if task_time else f" ({task_date})"
-                response += f"{index}. {status} {task['title']}{datetime_text}\n"
-
-            await message.answer(response)
-
-        return
-
-    if detect_delete_task(text):
-        deleted_task = delete_task_by_text(user_id, text)
-
-        if deleted_task:
-            await message.answer(f"Убрала задачу: {deleted_task['title']}")
-        else:
-            await message.answer("Не нашла такую задачу.")
-
-        return
-
-    if detect_complete_task(text):
-        completed_task = complete_task_by_text(user_id, text)
-
-        if completed_task:
-            await message.answer(f"Отметила выполненной: {completed_task['title']}")
-        else:
-            await message.answer("Не нашла такую активную задачу.")
-
-        return
-
-    if text == "💰 Финансы":
-        user_states[user_id] = "money"
-        await message.answer("Напиши доход или расход. Например: -500 кофе или +1000 зарплата")
+        await send_main_menu(message.chat.id, user_id)
         return
 
     if user_states.get(user_id) == "money":
@@ -903,27 +1016,51 @@ async def handler(message: types.Message):
         user_states[user_id] = None
 
         await message.answer(f"Записала: {amount} ({category})")
+        await send_main_menu(message.chat.id, user_id)
         return
 
-    if text == "📊 Баланс" or detect_balance_question(text):
-        balance, income, expense = calculate_balance(user_id)
+    if text.lower() in ["меню", "мои данные", "главное меню"]:
+        await send_main_menu(message.chat.id, user_id)
+        return
 
+    if detect_delete_task(text):
+        deleted_task = delete_task_by_text(user_id, text)
+
+        if deleted_task:
+            await message.answer(f"Убрала задачу: {deleted_task['title']}")
+        else:
+            await message.answer("Не нашла такую задачу.")
+
+        await send_main_menu(message.chat.id, user_id)
+        return
+
+    if detect_complete_task(text):
+        completed_task = complete_task_by_text(user_id, text)
+
+        if completed_task:
+            await message.answer(f"Отметила выполненной: {completed_task['title']}")
+        else:
+            await message.answer("Не нашла такую активную задачу.")
+
+        await send_main_menu(message.chat.id, user_id)
+        return
+
+    if detect_balance_question(text):
+        balance, income, expense = calculate_balance(user_id)
         await message.answer(
             f"📊 Баланс: {balance}\n\n"
             f"Сегодня:\n"
             f"💚 Доходы: +{income}\n"
             f"💸 Расходы: {expense}"
         )
-        return
-
-    if text == "📈 Аналитика финансов":
-        await message.answer(format_finance_stats(user_id, "today"))
+        await send_main_menu(message.chat.id, user_id)
         return
 
     finance_period = detect_finance_question(text)
 
     if finance_period:
         await message.answer(format_finance_stats(user_id, finance_period))
+        await send_main_menu(message.chat.id, user_id)
         return
 
     task_data = parse_smart_task(text)
@@ -937,6 +1074,7 @@ async def handler(message: types.Message):
         else:
             await message.answer(f"Добавила задачу: {title}")
 
+        await send_main_menu(message.chat.id, user_id)
         return
 
     finance_data = parse_smart_finance(text)
@@ -945,6 +1083,7 @@ async def handler(message: types.Message):
         amount, category = finance_data
         add_finance_operation(user_id, amount, category)
         await message.answer(f"Записала: {amount} ({category})")
+        await send_main_menu(message.chat.id, user_id)
         return
 
     await send_ai(message, text)
