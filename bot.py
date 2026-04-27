@@ -989,15 +989,11 @@ async def callbacks(callback: types.CallbackQuery):
         return
 
     if data == "reminders_menu":
-    tasks = get_user_tasks(user_id)
-
-    text = "DEBUG:\n\n"
-
-    for t in tasks:
-        text += f"{t}\n\n"
-
-    await callback.message.answer(text)
-    return
+        await callback.message.answer(
+            format_reminders_text(user_id),
+            reply_markup=back_to_menu_keyboard(),
+        )
+        return
 
     if data == "add_task":
         user_states[user_id] = "task"
