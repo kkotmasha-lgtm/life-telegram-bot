@@ -30,6 +30,10 @@ dp = Dispatcher()
 user_states = {}
 
 
+def user_key(user_id):
+    return str(user_id)
+
+
 def get_now():
     return datetime.now(TIMEZONE)
 
@@ -44,6 +48,7 @@ def get_current_time():
 
 def load_json(filename, default):
     if not os.path.exists(filename):
+        save_json(filename, default)
         return default
 
     try:
@@ -96,12 +101,12 @@ def save_users(users):
 
 def get_user_name(user_id):
     users = load_users()
-    return users.get(str(user_id), {}).get("name")
+    return users.get(user_key(user_id), {}).get("name")
 
 
 def save_user_name(user_id, name, message):
     users = load_users()
-    users[str(user_id)] = {
+    users[user_key(user_id)] = {
         "name": name,
         "username": message.from_user.username,
         "first_name": message.from_user.first_name,
@@ -112,18 +117,18 @@ def save_user_name(user_id, name, message):
 
 def add_memory(user_id, role, text):
     memory = load_memory()
-    user_key = str(user_id)
+    key = user_key(user_id)
 
-    if user_key not in memory:
-        memory[user_key] = []
+    if key not in memory:
+        memory[key] = []
 
-    memory[user_key].append({"role": role, "content": text})
-    memory[user_key] = memory[user_key][-20:]
+    memory[key].append({"role": role, "content": text})
+    memory[key] = memory[key][-20:]
     save_memory(memory)
 
 
 def get_memory(user_id):
-    return load_memory().get(str(user_id), [])
+    return load_memory().get(user_key(user_id), [])
 
 
 def main_menu_keyboard():
@@ -147,7 +152,7 @@ def tasks_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить задачу", callback_data="add_task")],
-            [InlineKeyboardButton(text="📋 Мои задачи", callback_data="show_tasks")],
+            [InlineKeyboardButton(text="📋 Активные задачи", callback_data="show_tasks")],
             [InlineKeyboardButton(text="✅ Как отметить выполненной", callback_data="tasks_done_help")],
             [InlineKeyboardButton(text="❌ Как удалить задачу", callback_data="tasks_delete_help")],
             [InlineKeyboardButton(text="🏠 Меню", callback_data="main_menu")],
@@ -175,9 +180,11 @@ def back_to_menu_keyboard():
 
 
 def get_user_tasks(user_id):
+    key = user_key(user_id)
+
     return [
         task for task in load_tasks()
-        if isinstance(task, dict) and task.get("user_id") == user_id
+        if isinstance(task, dict) and user_key(task.get("user_id")) == key
     ]
 
 
@@ -195,6 +202,72 @@ def get_done_tasks(user_id):
     ]
 
 
+def get_active_reminders(user_id):
+    reminders = []
+
+    for task in get_active_tasks(user_id):
+        if task.get("date") and task.get("time"):
+            reminders.append(task)
+
+    reminders.sort(key=lambda task: f"{task.get('date', '')} {task.get('time', '')}")
+    return reminders
+
+
+def format_task_when(task):
+    task_date = task.get("date")
+    task_time = task.get("time")
+
+    if task_date and task_time:
+        return f"{task_date} в {task_time}"
+
+    if task_date:
+        return task_date
+
+    return ""
+
+
+def format_active_tasks_text(user_id):
+    tasks = get_active_tasks(user_id)
+
+    if not tasks:
+        return "📋 Активные задачи\n\nУ тебя пока нет активных задач."
+
+    text = "📋 Активные задачи:\n\n"
+
+    for index, task in enumerate(tasks, start=1):
+        title = task.get("title", "Без названия")
+        when = format_task_when(task)
+
+        if when:
+            text += f"{index}. 🟡 {title} — {when}\n"
+        else:
+            text += f"{index}. 🟡 {title}\n"
+
+    return text
+
+
+def format_reminders_text(user_id):
+    reminders = get_active_reminders(user_id)
+
+    if not reminders:
+        return (
+            "⏰ Напоминания\n\n"
+            "Активных напоминаний пока нет.\n\n"
+            "Чтобы добавить напоминание, напиши так:\n"
+            "напомни купить молоко завтра в 18:00\n"
+            "напомни оплатить подписку 24.05 в 09:00"
+        )
+
+    text = "⏰ Активные напоминания:\n\n"
+
+    for index, task in enumerate(reminders, start=1):
+        title = task.get("title", "Без названия")
+        when = format_task_when(task)
+        text += f"{index}. {title} — {when}\n"
+
+    return text
+
+
 def format_main_menu_text(user_id):
     name = get_user_name(user_id) or "друг"
 
@@ -210,10 +283,13 @@ def format_main_menu_text(user_id):
 
     if active_tasks:
         for index, task in enumerate(active_tasks[:5], start=1):
-            task_date = task.get("date", "")
-            task_time = task.get("time", "")
-            when = f" — {task_date} {task_time}".strip()
-            text += f"{index}. {task.get('title')}{when}\n"
+            title = task.get("title", "Без названия")
+            when = format_task_when(task)
+
+            if when:
+                text += f"{index}. {title} — {when}\n"
+            else:
+                text += f"{index}. {title}\n"
     else:
         text += "Активных задач пока нет.\n"
 
@@ -235,7 +311,8 @@ async def send_main_menu(chat_id, user_id):
 
 
 def extract_time(text):
-    match = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
+    match = re.search(r"\b(?:в\s*)?(\d{1,2}):(\d{2})\b", text.lower())
+
     if not match:
         return None
 
@@ -258,6 +335,9 @@ def extract_date(text):
 
     if "завтра" in lower_text:
         return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    if "сегодня" in lower_text:
+        return today.strftime("%Y-%m-%d")
 
     if "через месяц" in lower_text:
         month = now.month + 1
@@ -285,13 +365,16 @@ def extract_date(text):
         year_text = match.group(3)
 
         year = int(year_text) if year_text else now.year
+
         if year < 100:
             year += 2000
 
         try:
             date_obj = datetime(year, month, day, tzinfo=TIMEZONE).date()
+
             if not year_text and date_obj < today:
                 date_obj = datetime(year + 1, month, day, tzinfo=TIMEZONE).date()
+
             return date_obj.strftime("%Y-%m-%d")
         except Exception:
             return get_today()
@@ -325,6 +408,7 @@ def clean_task_text(text):
     for pattern in remove_patterns:
         task_text = re.sub(pattern, "", task_text, flags=re.IGNORECASE)
 
+    task_text = re.sub(r"\s+", " ", task_text)
     return task_text.strip()
 
 
@@ -357,11 +441,12 @@ def add_task(user_id, title, task_date=None, task_time=None):
     tasks = load_tasks()
 
     task = {
-        "user_id": user_id,
+        "user_id": user_key(user_id),
         "title": title,
         "date": task_date or get_today(),
         "status": "active",
         "reminded": False,
+        "created_at": get_now().strftime("%Y-%m-%d %H:%M"),
     }
 
     if task_time:
@@ -413,6 +498,7 @@ def clean_task_command_text(text):
 
 def detect_delete_task(text):
     text = text.lower()
+
     return (
         "задач" in text
         and any(word in text for word in ["удали", "удалить", "убери", "убрать", "отмени", "отменить"])
@@ -421,6 +507,7 @@ def detect_delete_task(text):
 
 def detect_complete_task(text):
     text = text.lower()
+
     return (
         "задач" in text
         and any(word in text for word in [
@@ -432,10 +519,11 @@ def detect_complete_task(text):
 
 def delete_task_by_text(user_id, text):
     tasks = load_tasks()
+    key = user_key(user_id)
     user_tasks = []
 
     for index, task in enumerate(tasks):
-        if isinstance(task, dict) and task.get("user_id") == user_id:
+        if isinstance(task, dict) and user_key(task.get("user_id")) == key:
             user_tasks.append((index, task))
 
     if not user_tasks:
@@ -460,6 +548,7 @@ def delete_task_by_text(user_id, text):
     if query:
         for index, task in user_tasks:
             title = normalize_text(task.get("title", ""))
+
             if query in title or title in query:
                 deleted_task = tasks.pop(index)
                 save_tasks(tasks)
@@ -470,12 +559,13 @@ def delete_task_by_text(user_id, text):
 
 def complete_task_by_text(user_id, text):
     tasks = load_tasks()
+    key = user_key(user_id)
     active_tasks = []
 
     for index, task in enumerate(tasks):
         if (
             isinstance(task, dict)
-            and task.get("user_id") == user_id
+            and user_key(task.get("user_id")) == key
             and task.get("status", "active") == "active"
         ):
             active_tasks.append((index, task))
@@ -504,6 +594,7 @@ def complete_task_by_text(user_id, text):
     if query:
         for index, task in active_tasks:
             title = normalize_text(task.get("title", ""))
+
             if query in title or title in query:
                 tasks[index]["status"] = "done"
                 tasks[index]["done_at"] = get_now().strftime("%Y-%m-%d %H:%M")
@@ -517,6 +608,12 @@ def parse_smart_finance(text):
     original_text = text
     text = text.lower()
 
+    simple_match = re.match(r"^([+-]\d+)\s*(.*)", text)
+    if simple_match:
+        amount = int(simple_match.group(1))
+        category = simple_match.group(2).strip() or "без категории"
+        return amount, category
+
     finance_words = [
         "расход", "потрат", "купила", "купил",
         "доход", "получила", "получил", "зарплата", "зп",
@@ -527,6 +624,7 @@ def parse_smart_finance(text):
         return None
 
     amount_match = re.search(r"([+-]?\d+)", text)
+
     if not amount_match:
         return None
 
@@ -563,7 +661,7 @@ def add_finance_operation(user_id, amount, category):
     finance = load_finance()
 
     finance.append({
-        "user_id": user_id,
+        "user_id": user_key(user_id),
         "amount": amount,
         "category": category,
         "date": get_today(),
@@ -575,7 +673,12 @@ def add_finance_operation(user_id, amount, category):
 
 def calculate_balance(user_id):
     finance = load_finance()
-    user_finance = [item for item in finance if isinstance(item, dict) and item.get("user_id") == user_id]
+    key = user_key(user_id)
+
+    user_finance = [
+        item for item in finance
+        if isinstance(item, dict) and user_key(item.get("user_id")) == key
+    ]
 
     balance = sum(item.get("amount", 0) for item in user_finance)
     today = get_today()
@@ -597,6 +700,7 @@ def calculate_balance(user_id):
 
 def detect_balance_question(text):
     text = text.lower()
+
     return any(word in text for word in [
         "баланс", "покажи баланс", "какой баланс",
         "остаток", "покажи остаток", "сколько денег",
@@ -640,6 +744,7 @@ def detect_finance_question(text):
 def get_finance_stats(user_id, period):
     finance = load_finance()
     start_date = get_period_start(period)
+    key = user_key(user_id)
 
     operations = []
     income = 0
@@ -648,7 +753,7 @@ def get_finance_stats(user_id, period):
     expense_by_category = defaultdict(int)
 
     for item in finance:
-        if not isinstance(item, dict) or item.get("user_id") != user_id:
+        if not isinstance(item, dict) or user_key(item.get("user_id")) != key:
             continue
 
         try:
@@ -790,24 +895,30 @@ async def reminder_loop():
                 continue
 
             task_time = task.get("time")
-            if not task_time:
+            task_date = task.get("date")
+
+            if not task_time or not task_date:
                 continue
 
             try:
                 task_datetime = datetime.strptime(
-                    f"{task.get('date')} {task_time}",
+                    f"{task_date} {task_time}",
                     "%Y-%m-%d %H:%M",
                 ).replace(tzinfo=TIMEZONE)
             except Exception:
                 continue
 
             if task_datetime <= now:
-                await bot.send_message(
-                    task["user_id"],
-                    f"⏰ Напоминание!\n\n{task['title']}",
-                )
-                task["reminded"] = True
-                changed = True
+                try:
+                    await bot.send_message(
+                        int(task["user_id"]),
+                        f"⏰ Напоминание!\n\n{task.get('title', 'Без названия')}",
+                        reply_markup=main_menu_keyboard(),
+                    )
+                    task["reminded"] = True
+                    changed = True
+                except Exception as error:
+                    print("REMINDER ERROR:", error)
 
         if changed:
             save_tasks(tasks)
@@ -857,7 +968,10 @@ async def callbacks(callback: types.CallbackQuery):
     await callback.answer()
 
     if data == "main_menu":
-        await callback.message.answer(format_main_menu_text(user_id), reply_markup=main_menu_keyboard())
+        await callback.message.answer(
+            format_main_menu_text(user_id),
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
     if data == "tasks_menu":
@@ -876,12 +990,7 @@ async def callbacks(callback: types.CallbackQuery):
 
     if data == "reminders_menu":
         await callback.message.answer(
-            "⏰ Напоминания\n\n"
-            "Примеры:\n"
-            "напомни выпить воды в 21:00\n"
-            "напомни позвонить завтра в 10:00\n"
-            "напомни оплатить подписку 24.05 в 09:00\n"
-            "напомни проверить через месяц в 12:00",
+            format_reminders_text(user_id),
             reply_markup=back_to_menu_keyboard(),
         )
         return
@@ -889,28 +998,20 @@ async def callbacks(callback: types.CallbackQuery):
     if data == "add_task":
         user_states[user_id] = "task"
         await callback.message.answer(
-            "Напиши задачу.\n\nНапример:\nнапомни купить хлеб завтра в 18:00",
+            "Напиши задачу.\n\n"
+            "Например:\n"
+            "напомни купить хлеб завтра в 18:00\n"
+            "или:\n"
+            "добавь задачу разобрать документы",
             reply_markup=back_to_menu_keyboard(),
         )
         return
 
     if data == "show_tasks":
-        tasks = get_user_tasks(user_id)
-
-        if not tasks:
-            await callback.message.answer("У тебя пока нет задач.", reply_markup=back_to_menu_keyboard())
-            return
-
-        text = "📋 Мои задачи:\n\n"
-
-        for index, task in enumerate(tasks, start=1):
-            status = "✅" if task.get("status") == "done" else "🟡"
-            date = task.get("date", "")
-            time = task.get("time", "")
-            when = f" ({date} {time})" if time else f" ({date})"
-            text += f"{index}. {status} {task.get('title')}{when}\n"
-
-        await callback.message.answer(text, reply_markup=back_to_menu_keyboard())
+        await callback.message.answer(
+            format_active_tasks_text(user_id),
+            reply_markup=back_to_menu_keyboard(),
+        )
         return
 
     if data == "tasks_done_help":
@@ -936,13 +1037,18 @@ async def callbacks(callback: types.CallbackQuery):
     if data == "add_finance":
         user_states[user_id] = "money"
         await callback.message.answer(
-            "Напиши доход или расход.\n\nНапример:\n-500 кофе\n+1000 зарплата\nпотратила 300 еда",
+            "Напиши доход или расход.\n\n"
+            "Например:\n"
+            "-500 кофе\n"
+            "+1000 зарплата\n"
+            "потратила 300 еда",
             reply_markup=back_to_menu_keyboard(),
         )
         return
 
     if data == "show_balance":
         balance, income, expense = calculate_balance(user_id)
+
         await callback.message.answer(
             f"📊 Баланс: {balance}\n\n"
             f"Сегодня:\n"
@@ -1027,7 +1133,7 @@ async def handler(message: types.Message):
         deleted_task = delete_task_by_text(user_id, text)
 
         if deleted_task:
-            await message.answer(f"Убрала задачу: {deleted_task['title']}")
+            await message.answer(f"Убрала задачу: {deleted_task.get('title', 'Без названия')}")
         else:
             await message.answer("Не нашла такую задачу.")
 
@@ -1038,7 +1144,7 @@ async def handler(message: types.Message):
         completed_task = complete_task_by_text(user_id, text)
 
         if completed_task:
-            await message.answer(f"Отметила выполненной: {completed_task['title']}")
+            await message.answer(f"Отметила выполненной: {completed_task.get('title', 'Без названия')}")
         else:
             await message.answer("Не нашла такую активную задачу.")
 
@@ -1047,12 +1153,14 @@ async def handler(message: types.Message):
 
     if detect_balance_question(text):
         balance, income, expense = calculate_balance(user_id)
+
         await message.answer(
             f"📊 Баланс: {balance}\n\n"
             f"Сегодня:\n"
             f"💚 Доходы: +{income}\n"
             f"💸 Расходы: {expense}"
         )
+
         await send_main_menu(message.chat.id, user_id)
         return
 
@@ -1082,6 +1190,7 @@ async def handler(message: types.Message):
     if finance_data:
         amount, category = finance_data
         add_finance_operation(user_id, amount, category)
+
         await message.answer(f"Записала: {amount} ({category})")
         await send_main_menu(message.chat.id, user_id)
         return
